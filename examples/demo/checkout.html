@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Nepal Payment Demo</title>
+    <style>
+        body { font-family: system-ui; max-width: 800px; margin: 50px auto; padding: 20px; background: #f8f9fa; }
+        .container { display: flex; gap: 20px; flex-wrap: wrap; }
+        .card { background: white; border: 1px solid #ddd; border-radius: 12px; padding: 25px; flex: 1; min-width: 300px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .product-image { background: #e9ecef; height: 150px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; justify-content: center; color: #adb5bd; }
+        h1 { color: #343a40; margin-bottom: 30px; }
+        h2 { margin-top: 0; color: #495057; }
+        .price { font-size: 32px; font-weight: bold; color: #212529; margin: 15px 0; }
+        .price span { font-size: 16px; color: #6c757d; font-weight: normal; }
+        .payment-methods { display: flex; flex-direction: column; gap: 15px; margin-top: 25px; }
+        .btn { padding: 15px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: 600; display: flex; align-items: center; justify-content: center; transition: transform 0.1s; }
+        .btn:active { transform: scale(0.98); }
+        .btn-esewa { background: #60BB46; color: white; }
+        .btn-esewa:hover { background: #51a33b; }
+        .btn-khalti { background: #5C2D91; color: white; }
+        .btn-khalti:hover { background: #4b2575; }
+        .badge { background: #e9ecef; color: #495057; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+        .checkout-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="checkout-header">
+        <h1>Checkout</h1>
+        <span class="badge">SANDBOX MODE</span>
+    </div>
+    
+    <div class="container">
+        <!-- Product Details -->
+        <div class="card">
+            <div class="product-image">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+                    <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+                </svg>
+            </div>
+            <h2>Premium Subscription</h2>
+            <p style="color: #6c757d; line-height: 1.5;">
+                Unlock unlimited access to all premium features, including advanced analytics, priority support, and exclusive content.
+                Valid for 30 days.
+            </p>
+            <div class="price">
+                NPR 100.00
+                <span>/ month</span>
+            </div>
+            <div style="border-top: 1px solid #eee; padding-top: 15px; margin-top: 15px; font-size: 14px; color: #6c757d;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                    <span>Subtotal</span>
+                    <span>NPR 100.00</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                    <span>Tax (0%)</span>
+                    <span>NPR 0.00</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-weight: bold; color: #212529; margin-top: 10px;">
+                    <span>Total</span>
+                    <span>NPR 100.00</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Payment Options -->
+        <div class="card">
+            <h2>Select Payment Method</h2>
+            <p style="color: #6c757d; font-size: 14px; margin-bottom: 20px;">
+                Choose securely from one of the available payment providers.
+            </p>
+            
+            <div class="payment-methods">
+                <form action="/checkout/esewa" method="POST">
+                    <button type="submit" class="btn btn-esewa" style="width: 100%">
+                        Pay with eSewa
+                    </button>
+                </form>
+                
+                <form action="/checkout/khalti" method="POST">
+                    <button type="submit" class="btn btn-khalti" style="width: 100%">
+                        Pay with Khalti
+                    </button>
+                </form>
+            </div>
+
+            <div style="margin-top: 30px; padding: 15px; background: #fff3cd; border-radius: 8px; font-size: 13px; color: #856404; border: 1px solid #ffeeba;">
+                <strong>Sandbox Credentials:</strong><br><br>
+                <b>eSewa:</b> 9806800001 / Nepal@123<br>
+                <b>Khalti:</b> 9800000000 / 1111
+            </div>
+        </div>
+    </div>
+</body>
+</html>
