@@ -17,7 +17,8 @@ A unified payment SDK for Nepal, providing a clean interface for multiple paymen
 |----------|--------|-----------|
 | Khalti | ✅ Implemented | Redirect |
 | eSewa | ✅ Implemented | Form POST |
-| ConnectIPS | Planned | Redirect |
+| ConnectIPS | ✅ Implemented | Form POST |
+| FonePay | ✅ Implemented | Redirect |
 
 ## Installation
 
@@ -65,6 +66,28 @@ resp, _ := provider.InitiatePayment(ctx, &core.PaymentRequest{
 // resp.IsFormPOST = true, generate HTML form with resp.FormFields
 ```
 
+### ConnectIPS
+
+```go
+import "github.com/voidarchive/nepal-payment-go/providers/connectips"
+
+provider, _ := connectips.New(connectips.Config{
+    MerchantID:   os.Getenv("CONNECTIPS_MERCHANT_ID"),
+    AppID:        os.Getenv("CONNECTIPS_APP_ID"),
+    AppName:      "Your App",
+    CertPath:     os.Getenv("CONNECTIPS_CERT_PATH"),
+    CertPassword: os.Getenv("CONNECTIPS_CERT_PASSWORD"),
+    Sandbox:      true,
+})
+
+resp, _ := provider.InitiatePayment(ctx, &core.PaymentRequest{
+    Amount:      100, // NPR 100
+    OrderID:     "ORDER-123",
+    CallbackURL: "https://yoursite.com/callback",
+})
+// resp.IsFormPOST = true, generate HTML form with resp.FormFields
+```
+
 ## Running the Examples
 
 ### Khalti Demo
@@ -78,6 +101,16 @@ go run ./examples/khalti/
 
 ```bash
 go run ./examples/esewa/  # Uses sandbox defaults automatically
+```
+
+### ConnectIPS Demo
+
+```bash
+export CONNECTIPS_MERCHANT_ID="your_merchant_id"
+export CONNECTIPS_APP_ID="your_app_id"
+export CONNECTIPS_CERT_PATH="/path/to/creditor.pfx"
+export CONNECTIPS_CERT_PASSWORD="your_password"
+go run ./examples/connectips/
 ```
 
 ## Sandbox Test Credentials
@@ -96,6 +129,14 @@ go run ./examples/esewa/  # Uses sandbox defaults automatically
 | Password | Nepal@123 |
 | Token | 123456 |
 
+### ConnectIPS
+
+ConnectIPS sandbox credentials are provided upon merchant onboarding with Nepal Clearing House (NCHL).
+You will receive:
+- Merchant ID and App ID
+- `.pfx` certificate file and password
+- Test bank account credentials
+
 ## Project Structure
 
 ```
@@ -107,10 +148,14 @@ go run ./examples/esewa/  # Uses sandbox defaults automatically
 │   └── mock.go             # Mock provider for testing
 ├── providers/
 │   ├── khalti/             # Khalti implementation
-│   └── esewa/              # eSewa implementation
+│   ├── esewa/              # eSewa implementation
+│   └── connectips/         # ConnectIPS implementation
+│   └── fonepay/            # FonePay implementation
 └── examples/
     ├── khalti/             # Khalti demo server
-    └── esewa/              # eSewa demo server
+    ├── esewa/              # eSewa demo server
+    ├── connectips/         # ConnectIPS demo server
+    └── fonepay/            # FonePay demo server
 ```
 
 ## Testing
