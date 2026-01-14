@@ -416,7 +416,7 @@ func TestVerifyPayment(t *testing.T) {
 				}
 
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(tt.serverResponse)
+				_ = json.NewEncoder(w).Encode(tt.serverResponse) //nolint:errcheck
 			}))
 			defer server.Close()
 

@@ -196,7 +196,7 @@ func TestInitiatePayment(t *testing.T) {
 					}
 
 					w.WriteHeader(http.StatusOK)
-					json.NewEncoder(w).Encode(tt.serverResponse)
+					_ = json.NewEncoder(w).Encode(tt.serverResponse) //nolint:errcheck
 				}))
 				defer server.Close()
 			}
@@ -324,7 +324,7 @@ func TestVerifyPayment(t *testing.T) {
 					}
 
 					w.WriteHeader(http.StatusOK)
-					json.NewEncoder(w).Encode(tt.serverResponse)
+					_ = json.NewEncoder(w).Encode(tt.serverResponse) //nolint:errcheck
 				}))
 				defer server.Close()
 			}
@@ -378,7 +378,7 @@ func TestStatusNormalization(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.khaltiStatus, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				json.NewEncoder(w).Encode(lookupResponse{
+				_ = json.NewEncoder(w).Encode(lookupResponse{ //nolint:errcheck
 					PIDX:        "test",
 					TotalAmount: 1000,
 					Status:      tt.khaltiStatus,

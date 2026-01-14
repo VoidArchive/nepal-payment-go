@@ -90,7 +90,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 </body>
 </html>`
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, tmpl)
+	_, _ = fmt.Fprint(w, tmpl) //nolint:errcheck
 }
 
 func handleCheckout(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +194,7 @@ func renderResult(w http.ResponseWriter, success bool, title, message string, pa
 	}
 
 	w.Header().Set("Content-Type", "text/html")
-	tmpl.Execute(w, map[string]any{
+	_ = tmpl.Execute(w, map[string]any{ //nolint:errcheck
 		"Title":   title,
 		"Message": template.HTML(message),
 		"Color":   color,

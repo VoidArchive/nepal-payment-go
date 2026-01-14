@@ -220,7 +220,7 @@ func (p *Provider) verifyViaStatusAPI(ctx context.Context, req *core.VerifyReque
 		}
 		return nil, fmt.Errorf("%w: request failed: %v", core.ErrProviderError, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

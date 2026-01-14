@@ -11,49 +11,59 @@ import (
 	"strings"
 
 	"github.com/voidarchive/nepal-payment-go/core"
+	"github.com/voidarchive/nepal-payment-go/providers/connectips"
 	"github.com/voidarchive/nepal-payment-go/providers/esewa"
+	"github.com/voidarchive/nepal-payment-go/providers/fonepay"
 	"github.com/voidarchive/nepal-payment-go/providers/khalti"
 )
 
 var (
-	esewaProvider  *esewa.Provider
-	khaltiProvider *khalti.Provider
+	esewaProvider      *esewa.Provider
+	khaltiProvider     *khalti.Provider
+	connectipsProvider *connectips.Provider
+	fonepayProvider    *fonepay.Provider
 )
 
 func main() {
-	initEsewa()
-	initKhalti()
+	initProviders()
 
 	http.HandleFunc("/", handleHome)
 	http.HandleFunc("/checkout/esewa", handleEsewaCheckout)
 	http.HandleFunc("/checkout/khalti", handleKhaltiCheckout)
+	http.HandleFunc("/checkout/connectips", handleConnectIPSCheckout)
+	http.HandleFunc("/checkout/fonepay", handleFonepayCheckout)
 	http.HandleFunc("/payment/esewa/success", handleEsewaCallback)
 	http.HandleFunc("/payment/esewa/failure", handleEsewaFailure)
 	http.HandleFunc("/payment/khalti/callback", handleKhaltiCallback)
+	http.HandleFunc("/payment/connectips/callback", handleConnectIPSCallback)
+	http.HandleFunc("/payment/fonepay/callback", handleFonepayCallback)
 
 	fmt.Print(`
-Nepal Payment Demo Server Started!
-
-Open: http://localhost:8080
-
-Supported Providers:
-- eSewa (Sandbox)
-- Khalti (Sandbox)
+╔══════════════════════════════════════════════════════════════════╗
+║           Nepal Payment SDK - Combined Demo                      ║
+╠══════════════════════════════════════════════════════════════════╣
+║  Open: http://localhost:8080                                     ║
+╠══════════════════════════════════════════════════════════════════╣
+║  Providers:                                                      ║
+║    ✓ eSewa      - Sandbox (auto-configured)                      ║
+║    ✓ Khalti     - Needs KHALTI_SECRET_KEY                        ║
+║    ✓ ConnectIPS - Needs NCHL credentials + certificate           ║
+║    ✓ FonePay    - Sandbox (auto-configured)                      ║
+╚══════════════════════════════════════════════════════════════════╝
 `)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-func initEsewa() {
+func initProviders() {
+	// eSewa - auto-config sandbox
 	secretKey := os.Getenv("ESEWA_SECRET_KEY")
 	productCode := os.Getenv("ESEWA_PRODUCT_CODE")
-
 	if secretKey == "" {
 		secretKey = "8gBm/:&EnhH.1/q"
 	}
 	if productCode == "" {
 		productCode = "EPAYTEST"
 	}
-
 	var err error
 	esewaProvider, err = esewa.New(esewa.Config{
 		SecretKey:   secretKey,
@@ -61,25 +71,64 @@ func initEsewa() {
 		Sandbox:     productCode == "EPAYTEST",
 	})
 	if err != nil {
-		log.Fatalf("Failed to create eSewa provider: %v", err)
+		log.Fatalf("eSewa init failed: %v", err)
 	}
-}
+	log.Println("✓ eSewa initialized (sandbox)")
 
-func initKhalti() {
-	secretKey := os.Getenv("KHALTI_SECRET_KEY")
-	if secretKey == "" {
-		log.Println("WARNING: KHALTI_SECRET_KEY not set. Khalti payments will fail.")
-		return
+	// Khalti - requires env var
+	if key := os.Getenv("KHALTI_SECRET_KEY"); key != "" {
+		khaltiProvider, err = khalti.New(khalti.Config{
+			SecretKey:  key,
+			WebsiteURL: "http://localhost:8080",
+			Sandbox:    true,
+		})
+		if err != nil {
+			log.Printf("✗ Khalti init failed: %v", err)
+		} else {
+			log.Println("✓ Khalti initialized (sandbox)")
+		}
+	} else {
+		log.Println("✗ Khalti skipped (set KHALTI_SECRET_KEY)")
 	}
 
-	var err error
-	khaltiProvider, err = khalti.New(khalti.Config{
-		SecretKey:  secretKey,
-		WebsiteURL: "http://localhost:8080",
-		Sandbox:    true,
+	// ConnectIPS - requires cert
+	if os.Getenv("CONNECTIPS_MERCHANT_ID") != "" && os.Getenv("CONNECTIPS_CERT_PATH") != "" {
+		connectipsProvider, err = connectips.New(connectips.Config{
+			MerchantID:   os.Getenv("CONNECTIPS_MERCHANT_ID"),
+			AppID:        os.Getenv("CONNECTIPS_APP_ID"),
+			AppName:      os.Getenv("CONNECTIPS_APP_NAME"),
+			AppPassword:  os.Getenv("CONNECTIPS_APP_PASSWORD"),
+			CertPath:     os.Getenv("CONNECTIPS_CERT_PATH"),
+			CertPassword: os.Getenv("CONNECTIPS_CERT_PASSWORD"),
+			Sandbox:      true,
+		})
+		if err != nil {
+			log.Printf("✗ ConnectIPS init failed: %v", err)
+		} else {
+			log.Println("✓ ConnectIPS initialized (sandbox)")
+		}
+	} else {
+		log.Println("✗ ConnectIPS skipped (set CONNECTIPS_* env vars)")
+	}
+
+	// FonePay - auto-config sandbox
+	merchantCode := os.Getenv("FONEPAY_MERCHANT_CODE")
+	fonepaySecret := os.Getenv("FONEPAY_SECRET_KEY")
+	if merchantCode == "" {
+		merchantCode = "NBQM"
+	}
+	if fonepaySecret == "" {
+		fonepaySecret = "a7e3512f5032480a83137793cb2021dc"
+	}
+	fonepayProvider, err = fonepay.New(fonepay.Config{
+		MerchantCode: merchantCode,
+		SecretKey:    fonepaySecret,
+		Sandbox:      merchantCode == "NBQM",
 	})
 	if err != nil {
-		log.Fatalf("Failed to create Khalti provider: %v", err)
+		log.Printf("✗ FonePay init failed: %v", err)
+	} else {
+		log.Println("✓ FonePay initialized (sandbox)")
 	}
 }
 
@@ -92,13 +141,9 @@ func handleEsewaCheckout(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-
-	orderID := fmt.Sprintf("ESEWA-%d", os.Getpid())
-
 	resp, err := esewaProvider.InitiatePayment(r.Context(), &core.PaymentRequest{
 		Amount:      100,
-		Currency:    "NPR",
-		OrderID:     orderID,
+		OrderID:     fmt.Sprintf("ESEWA-%d", os.Getpid()),
 		Description: "Premium Subscription",
 		CallbackURL: "http://localhost:8080/payment/esewa/success",
 	})
@@ -106,7 +151,6 @@ func handleEsewaCheckout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("eSewa initiation failed: %v", err), http.StatusInternalServerError)
 		return
 	}
-
 	renderFormPOST(w, resp.TargetURL, resp.FormFields)
 }
 
@@ -115,16 +159,12 @@ func handleKhaltiCheckout(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-
 	if khaltiProvider == nil {
-		http.Error(w, "Khalti provider not configured", http.StatusInternalServerError)
+		http.Error(w, "Khalti not configured. Set KHALTI_SECRET_KEY.", http.StatusServiceUnavailable)
 		return
 	}
-
-	// Khalti amount is in paisa
 	resp, err := khaltiProvider.InitiatePayment(r.Context(), &core.PaymentRequest{
-		Amount:      10000,
-		Currency:    "NPR",
+		Amount:      10000, // Khalti uses paisa
 		OrderID:     fmt.Sprintf("KHALTI-%d", os.Getpid()),
 		Description: "Premium Subscription",
 		CallbackURL: "http://localhost:8080/payment/khalti/callback",
@@ -133,7 +173,46 @@ func handleKhaltiCheckout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Khalti initiation failed: %v", err), http.StatusInternalServerError)
 		return
 	}
+	http.Redirect(w, r, resp.TargetURL, http.StatusFound)
+}
 
+func handleConnectIPSCheckout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	if connectipsProvider == nil {
+		http.Error(w, "ConnectIPS not configured. Set CONNECTIPS_* env vars.", http.StatusServiceUnavailable)
+		return
+	}
+	resp, err := connectipsProvider.InitiatePayment(r.Context(), &core.PaymentRequest{
+		Amount:      100,
+		OrderID:     fmt.Sprintf("CIPS-%d", os.Getpid()),
+		Description: "Premium Subscription",
+		CallbackURL: "http://localhost:8080/payment/connectips/callback",
+	})
+	if err != nil {
+		http.Error(w, fmt.Sprintf("ConnectIPS initiation failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	renderFormPOST(w, resp.TargetURL, resp.FormFields)
+}
+
+func handleFonepayCheckout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	resp, err := fonepayProvider.InitiatePayment(r.Context(), &core.PaymentRequest{
+		Amount:      100,
+		OrderID:     fmt.Sprintf("FP-%d", os.Getpid()),
+		Description: "Premium Subscription",
+		CallbackURL: "http://localhost:8080/payment/fonepay/callback",
+	})
+	if err != nil {
+		http.Error(w, fmt.Sprintf("FonePay initiation failed: %v", err), http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, resp.TargetURL, http.StatusFound)
 }
 
@@ -142,40 +221,41 @@ func handleEsewaCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleEsewaFailure(w http.ResponseWriter, r *http.Request) {
-	params := make(map[string]string)
-	for key, values := range r.URL.Query() {
-		params[key] = values[0]
-	}
-	renderResult(w, false, "Payment Failed", "The payment was not completed.", params)
+	renderResult(w, false, "Payment Failed", "The eSewa payment was not completed.", nil)
 }
 
 func handleKhaltiCallback(w http.ResponseWriter, r *http.Request) {
+	params := queryToMap(r)
+	if params["status"] == "User canceled" {
+		renderResult(w, false, "Payment Cancelled", "You cancelled the Khalti payment.", params)
+		return
+	}
 	handleCallback(w, r, khaltiProvider, 10000, "Khalti")
 }
 
+func handleConnectIPSCallback(w http.ResponseWriter, r *http.Request) {
+	handleCallback(w, r, connectipsProvider, 100, "ConnectIPS")
+}
+
+func handleFonepayCallback(w http.ResponseWriter, r *http.Request) {
+	handleCallback(w, r, fonepayProvider, 100, "FonePay")
+}
+
 func handleCallback(w http.ResponseWriter, r *http.Request, p core.Provider, amount int64, name string) {
-	log.Printf("%s callback received: %v", name, r.URL.Query())
-
-	params := make(map[string]string)
-	for key, values := range r.URL.Query() {
-		params[key] = values[0]
-	}
-
-	// Check for Khalti cancellation
-	if name == "Khalti" && params["status"] == "User canceled" {
-		renderResult(w, false, "Payment Cancelled", "You cancelled the payment.", params)
-		return
-	}
+	log.Printf("%s callback: %v", name, r.URL.Query())
+	params := queryToMap(r)
 
 	result, err := p.VerifyPayment(r.Context(), &core.VerifyRequest{
 		EncodedParams:  params,
 		ExpectedAmount: amount,
 	})
 	if err != nil {
-		log.Printf("Verification error: %v", err)
+		log.Printf("%s verification error: %v", name, err)
 		msg := "Payment verification failed"
 		if errors.Is(err, core.ErrAmountMismatch) {
 			msg = "Amount mismatch detected!"
+		} else if errors.Is(err, core.ErrSignatureMismatch) {
+			msg = "Signature verification failed!"
 		}
 		renderResult(w, false, "Verification Failed", msg, params)
 		return
@@ -184,7 +264,7 @@ func handleCallback(w http.ResponseWriter, r *http.Request, p core.Provider, amo
 	if result.Success {
 		displayAmount := float64(result.VerifiedAmount)
 		if name == "Khalti" {
-			displayAmount = displayAmount / 100
+			displayAmount /= 100 // Khalti uses paisa
 		}
 		renderResult(w, true, "Payment Successful!",
 			fmt.Sprintf("Provider: %s<br>Transaction ID: %s<br>Amount: NPR %.2f",
@@ -195,12 +275,18 @@ func handleCallback(w http.ResponseWriter, r *http.Request, p core.Provider, amo
 	}
 }
 
+func queryToMap(r *http.Request) map[string]string {
+	params := make(map[string]string)
+	for key, values := range r.URL.Query() {
+		params[key] = values[0]
+	}
+	return params
+}
+
 func renderFormPOST(w http.ResponseWriter, targetURL string, fields map[string]string) {
 	tmpl := template.Must(template.New("form").Parse(`<!DOCTYPE html>
 <html>
-<head>
-    <title>Redirecting...</title>
-</head>
+<head><title>Redirecting...</title></head>
 <body>
     <p>Redirecting to payment provider...</p>
     <form id="pay-form" action="{{.URL}}" method="POST">
@@ -211,12 +297,8 @@ func renderFormPOST(w http.ResponseWriter, targetURL string, fields map[string]s
     <script>document.getElementById('pay-form').submit();</script>
 </body>
 </html>`))
-
 	w.Header().Set("Content-Type", "text/html")
-	tmpl.Execute(w, map[string]any{
-		"URL":    targetURL,
-		"Fields": fields,
-	})
+	_ = tmpl.Execute(w, map[string]any{"URL": targetURL, "Fields": fields}) //nolint:errcheck
 }
 
 func renderResult(w http.ResponseWriter, success bool, title, message string, params map[string]string) {
@@ -235,8 +317,7 @@ func renderResult(w http.ResponseWriter, success bool, title, message string, pa
         .card { border: 2px solid {{.Color}}; border-radius: 8px; padding: 20px; margin: 20px 0; }
         h1 { color: {{.Color}}; }
         .params { background: #f5f5f5; padding: 10px; border-radius: 4px; font-size: 12px; }
-        a { color: #007bff; text-decoration: none; }
-        a:hover { text-decoration: underline; }
+        a { color: #007bff; }
     </style>
 </head>
 <body>
@@ -245,10 +326,8 @@ func renderResult(w http.ResponseWriter, success bool, title, message string, pa
         <p>{{.Message}}</p>
         <p><a href="/">Back to Store</a></p>
     </div>
-    <details>
-        <summary>Debug: Callback Parameters</summary>
-        <div class="params"><pre>{{.Params}}</pre></div>
-    </details>
+    {{if .Params}}<details><summary>Debug: Callback Parameters</summary>
+    <div class="params"><pre>{{.Params}}</pre></div></details>{{end}}
 </body>
 </html>`))
 
@@ -256,9 +335,8 @@ func renderResult(w http.ResponseWriter, success bool, title, message string, pa
 	for k, v := range params {
 		fmt.Fprintf(&sb, "%s: %s\n", k, v)
 	}
-
 	w.Header().Set("Content-Type", "text/html")
-	tmpl.Execute(w, map[string]any{
+	_ = tmpl.Execute(w, map[string]any{ //nolint:errcheck
 		"Title":   title,
 		"Message": template.HTML(message),
 		"Color":   color,

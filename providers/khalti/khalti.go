@@ -172,7 +172,7 @@ func (p *Provider) doRequest(ctx context.Context, endpoint string, payload any, 
 		}
 		return fmt.Errorf("%w: request failed: %v", core.ErrProviderError, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
