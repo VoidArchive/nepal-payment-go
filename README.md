@@ -118,6 +118,32 @@ resp, _ := provider.InitiatePayment(ctx, &core.PaymentRequest{
 // Redirect user to resp.TargetURL
 ```
 
+### FonePay Dynamic QR (In-Person Payments)
+
+Generate QR codes for retail/in-person payments. Requires additional credentials from your bank.
+
+```go
+provider, _ := fonepay.New(fonepay.Config{
+    MerchantCode: "NBQM",
+    SecretKey:    "a7e3512f5032480a83137793cb2021dc",
+    Username:     os.Getenv("FONEPAY_USERNAME"),  // QR API credentials
+    Password:     os.Getenv("FONEPAY_PASSWORD"),
+    Sandbox:      true,
+})
+
+// Generate QR code
+qr, _ := provider.GenerateQR(ctx, &fonepay.QRRequest{
+    Amount:      500,
+    OrderID:     "TABLE-42",
+    Description: "Coffee Shop Order",
+})
+
+// Display QR to customer
+// qr.QRImageData contains PNG bytes
+// Save to file: os.WriteFile("payment.png", qr.QRImageData, 0644)
+```
+
+
 ## Payment Verification
 
 All providers use the same verification pattern:
@@ -320,7 +346,7 @@ go test ./providers/fonepay/... -v
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Feel free to submit a Pull Request.
 
 ## License
 

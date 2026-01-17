@@ -403,3 +403,136 @@ func TestURLGeneration(t *testing.T) {
 	assert.Contains(t, resp.TargetURL, "MD=P")
 	assert.Contains(t, resp.TargetURL, "CRN=NPR")
 }
+
+func TestGenerateQR_Validation(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  Config
+		request *QRRequest
+		wantErr error
+	}{
+		{
+			name: "missing username",
+			config: Config{
+				MerchantCode: "NBQM",
+				SecretKey:    testSecretKey,
+				Sandbox:      true,
+				Password:     "testpass",
+			},
+			request: &QRRequest{
+				Amount:      100,
+				OrderID:     "QR-001",
+				Description: "Test QR",
+			},
+			wantErr: core.ErrInvalidConfig,
+		},
+		{
+			name: "missing password",
+			config: Config{
+				MerchantCode: "NBQM",
+				SecretKey:    testSecretKey,
+				Sandbox:      true,
+				Username:     "testuser",
+			},
+			request: &QRRequest{
+				Amount:      100,
+				OrderID:     "QR-001",
+				Description: "Test QR",
+			},
+			wantErr: core.ErrInvalidConfig,
+		},
+		{
+			name: "zero amount",
+			config: Config{
+				MerchantCode: "NBQM",
+				SecretKey:    testSecretKey,
+				Sandbox:      true,
+				Username:     "testuser",
+				Password:     "testpass",
+			},
+			request: &QRRequest{
+				Amount:      0,
+				OrderID:     "QR-001",
+				Description: "Test QR",
+			},
+			wantErr: core.ErrInvalidRequest,
+		},
+		{
+			name: "negative amount",
+			config: Config{
+				MerchantCode: "NBQM",
+				SecretKey:    testSecretKey,
+				Sandbox:      true,
+				Username:     "testuser",
+				Password:     "testpass",
+			},
+			request: &QRRequest{
+				Amount:      -100,
+				OrderID:     "QR-001",
+				Description: "Test QR",
+			},
+			wantErr: core.ErrInvalidRequest,
+		},
+		{
+			name: "missing order ID",
+			config: Config{
+				MerchantCode: "NBQM",
+				SecretKey:    testSecretKey,
+				Sandbox:      true,
+				Username:     "testuser",
+				Password:     "testpass",
+			},
+			request: &QRRequest{
+				Amount:      100,
+				Description: "Test QR",
+			},
+			wantErr: core.ErrInvalidRequest,
+		},
+		{
+			name: "missing description",
+			config: Config{
+				MerchantCode: "NBQM",
+				SecretKey:    testSecretKey,
+				Sandbox:      true,
+				Username:     "testuser",
+				Password:     "testpass",
+			},
+			request: &QRRequest{
+				Amount:  100,
+				OrderID: "QR-001",
+			},
+			wantErr: core.ErrInvalidRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, err := New(tt.config)
+			require.NoError(t, err)
+
+			resp, err := provider.GenerateQR(context.Background(), tt.request)
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tt.wantErr)
+			assert.Nil(t, resp)
+		})
+	}
+}
+
+func TestQRAPIURL(t *testing.T) {
+	// Sandbox should use dev URL
+	sandboxProvider, _ := New(Config{
+		MerchantCode: "NBQM",
+		SecretKey:    testSecretKey,
+		Sandbox:      true,
+	})
+	assert.Equal(t, sandboxQRURL, sandboxProvider.qrAPIURL)
+
+	// Production should use production URL
+	prodProvider, _ := New(Config{
+		MerchantCode: "NBQM",
+		SecretKey:    testSecretKey,
+		Sandbox:      false,
+	})
+	assert.Equal(t, productionQRURL, prodProvider.qrAPIURL)
+}

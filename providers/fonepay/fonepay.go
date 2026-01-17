@@ -1,11 +1,15 @@
 package fonepay
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha512"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -18,6 +22,10 @@ import (
 const (
 	sandboxBaseURL    = "https://dev-clientapi.fonepay.com/api/merchantRequest"
 	productionBaseURL = "https://clientapi.fonepay.com/api/merchantRequest"
+
+	// QR API endpoints
+	sandboxQRURL    = "https://dev-merchantapi.fonepay.com/api/merchant/merchantDetailsForThirdParty/thirdPartyDynamicQrDownload"
+	productionQRURL = "https://merchantapi.fonepay.com/api/merchant/merchantDetailsForThirdParty/thirdPartyDynamicQrDownload"
 )
 
 // Config holds FonePay provider configuration.
@@ -26,6 +34,10 @@ type Config struct {
 	SecretKey    string        // HMAC secret key from FonePay
 	Sandbox      bool          // Use sandbox environment
 	Timeout      time.Duration // HTTP client timeout (default: 30s)
+
+	// QR API credentials (optional, only needed for GenerateQR)
+	Username string // FonePay merchant API username
+	Password string // FonePay merchant API password
 }
 
 // Provider implements core.Provider for FonePay payments.
@@ -33,6 +45,7 @@ type Provider struct {
 	config     Config
 	httpClient *http.Client
 	baseURL    string
+	qrAPIURL   string
 }
 
 // New creates a new FonePay provider.
@@ -45,8 +58,10 @@ func New(cfg Config) (*Provider, error) {
 	}
 
 	baseURL := productionBaseURL
+	qrURL := productionQRURL
 	if cfg.Sandbox {
 		baseURL = sandboxBaseURL
+		qrURL = sandboxQRURL
 	}
 
 	timeout := cfg.Timeout
@@ -57,6 +72,7 @@ func New(cfg Config) (*Provider, error) {
 	return &Provider{
 		config:     cfg,
 		baseURL:    baseURL,
+		qrAPIURL:   qrURL,
 		httpClient: &http.Client{Timeout: timeout},
 	}, nil
 }
@@ -211,6 +227,119 @@ func (p *Provider) normalizeStatus(status string, rc string) (string, bool) {
 	default:
 		return core.StatusFailed, false
 	}
+}
+
+// GenerateQR creates a dynamic QR code for in-person payments.
+// Requires Username and Password to be configured.
+// Returns QR image data that can be displayed to customers.
+func (p *Provider) GenerateQR(ctx context.Context, req *QRRequest) (*QRResponse, error) {
+	if err := p.validateQRConfig(); err != nil {
+		return nil, err
+	}
+	if err := p.validateQRRequest(req); err != nil {
+		return nil, err
+	}
+
+	// Build data validation hash
+	// Format: amount,prn,merchantCode,remarks1,remarks2
+	remarks2 := req.Remarks2
+	if remarks2 == "" {
+		remarks2 = "N/A"
+	}
+
+	message := fmt.Sprintf("%d,%s,%s,%s,%s",
+		req.Amount,
+		req.OrderID,
+		p.config.MerchantCode,
+		req.Description,
+		remarks2,
+	)
+	dataValidation := p.generateHMAC(message)
+
+	// Build request payload
+	payload := qrAPIRequest{
+		Amount:         strconv.FormatInt(req.Amount, 10),
+		PRN:            req.OrderID,
+		MerchantCode:   p.config.MerchantCode,
+		Remarks1:       req.Description,
+		Remarks2:       remarks2,
+		DataValidation: dataValidation,
+		Username:       p.config.Username,
+		Password:       p.config.Password,
+	}
+
+	jsonBody, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to marshal request: %v", core.ErrProviderError, err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.qrAPIURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to create request: %v", core.ErrProviderError, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("%w: %v", core.ErrTimeout, ctx.Err())
+		}
+		return nil, fmt.Errorf("%w: request failed: %v", core.ErrProviderError, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to read response: %v", core.ErrProviderError, err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: HTTP %d: %s", core.ErrProviderError, resp.StatusCode, string(body))
+	}
+
+	var qrResp qrAPIResponse
+	if err := json.Unmarshal(body, &qrResp); err != nil {
+		return nil, fmt.Errorf("%w: failed to parse response: %v", core.ErrProviderError, err)
+	}
+
+	if !qrResp.Success {
+		return nil, fmt.Errorf("%w: %s", core.ErrProviderError, qrResp.Message)
+	}
+
+	// Decode Base64 QR image
+	qrImageData, err := base64.StdEncoding.DecodeString(qrResp.QRCode)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to decode QR image: %v", core.ErrProviderError, err)
+	}
+
+	return &QRResponse{
+		QRImageData:   qrImageData,
+		TransactionID: qrResp.PRN,
+		MerchantCode:  qrResp.MerchantCode,
+	}, nil
+}
+
+func (p *Provider) validateQRConfig() error {
+	if p.config.Username == "" {
+		return fmt.Errorf("%w: Username is required for QR API", core.ErrInvalidConfig)
+	}
+	if p.config.Password == "" {
+		return fmt.Errorf("%w: Password is required for QR API", core.ErrInvalidConfig)
+	}
+	return nil
+}
+
+func (p *Provider) validateQRRequest(req *QRRequest) error {
+	if req.Amount <= 0 {
+		return fmt.Errorf("%w: amount must be positive", core.ErrInvalidRequest)
+	}
+	if req.OrderID == "" {
+		return fmt.Errorf("%w: OrderID is required", core.ErrInvalidRequest)
+	}
+	if req.Description == "" {
+		return fmt.Errorf("%w: Description is required", core.ErrInvalidRequest)
+	}
+	return nil
 }
 
 // Ensure Provider implements core.Provider
