@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -79,13 +80,12 @@ func (p *Provider) InitiatePayment(ctx context.Context, req *core.PaymentRequest
 		return nil, err
 	}
 
-	// eSewa expects amount in rupees (not paisa)
-	amount := req.Amount
-	totalAmount := amount
+	// eSewa expects rupees; req.Amount is paisa. The signed string must match the sent field exactly.
+	totalAmount := strconv.FormatFloat(float64(req.Amount)/100, 'f', -1, 64)
 
 	// Generate signature for: total_amount,transaction_uuid,product_code
 	signedFields := "total_amount,transaction_uuid,product_code"
-	message := fmt.Sprintf("total_amount=%d,transaction_uuid=%s,product_code=%s",
+	message := fmt.Sprintf("total_amount=%s,transaction_uuid=%s,product_code=%s",
 		totalAmount, req.OrderID, p.config.ProductCode)
 	signature := p.generateSignature(message)
 
@@ -99,9 +99,9 @@ func (p *Provider) InitiatePayment(ctx context.Context, req *core.PaymentRequest
 	}
 
 	formFields := map[string]string{
-		"amount":                  strconv.FormatInt(amount, 10),
+		"amount":                  totalAmount,
 		"tax_amount":              "0",
-		"total_amount":            strconv.FormatInt(totalAmount, 10),
+		"total_amount":            totalAmount,
 		"transaction_uuid":        req.OrderID,
 		"product_code":            p.config.ProductCode,
 		"product_service_charge":  "0",
@@ -146,12 +146,17 @@ func (p *Provider) VerifyPayment(ctx context.Context, req *core.VerifyRequest) (
 		return nil, err
 	}
 
-	// Parse amount from string (eSewa returns "100.0" format)
-	parsedAmount, err := strconv.ParseFloat(callback.TotalAmount, 64)
+	if req.OriginalOrderID != "" && req.OriginalOrderID != callback.TransactionUUID {
+		return nil, fmt.Errorf("%w: order ID mismatch: expected %s, got %s",
+			core.ErrInvalidRequest, req.OriginalOrderID, callback.TransactionUUID)
+	}
+
+	// eSewa returns rupees with thousands separators ("1,000.0"); convert to paisa.
+	parsedAmount, err := strconv.ParseFloat(strings.ReplaceAll(callback.TotalAmount, ",", ""), 64)
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid amount format: %v", core.ErrInvalidRequest, err)
 	}
-	verifiedAmount := int64(parsedAmount)
+	verifiedAmount := int64(math.Round(parsedAmount * 100))
 
 	// Validate amount if expected
 	if req.ExpectedAmount > 0 && req.ExpectedAmount != verifiedAmount {
@@ -179,33 +184,26 @@ func (p *Provider) VerifyPayment(ctx context.Context, req *core.VerifyRequest) (
 
 // verifyViaStatusAPI checks transaction status directly with eSewa API.
 func (p *Provider) verifyViaStatusAPI(ctx context.Context, req *core.VerifyRequest) (*core.VerifyResponse, error) {
-	transactionUUID := req.EncodedParams["transaction_uuid"]
+	// The merchant's own order ID wins over the (attacker-controllable) URL param.
+	transactionUUID := req.OriginalOrderID
 	if transactionUUID == "" {
-		transactionUUID = req.OriginalOrderID
+		transactionUUID = req.EncodedParams["transaction_uuid"]
 	}
 	if transactionUUID == "" {
 		return nil, fmt.Errorf("%w: transaction_uuid or data parameter required", core.ErrInvalidRequest)
 	}
 
-	totalAmount := req.ExpectedAmount
-	if totalAmount == 0 {
-		if amtStr := req.EncodedParams["total_amount"]; amtStr != "" {
-			if amt, err := strconv.ParseInt(amtStr, 10, 64); err == nil {
-				totalAmount = amt
-			}
-		}
-	}
-
-	productCode := req.EncodedParams["product_code"]
-	if productCode == "" {
-		productCode = p.config.ProductCode
+	// eSewa expects rupees; ExpectedAmount is paisa. The URL param is already rupees as eSewa sent it.
+	totalAmount := strconv.FormatFloat(float64(req.ExpectedAmount)/100, 'f', -1, 64)
+	if req.ExpectedAmount == 0 {
+		totalAmount = req.EncodedParams["total_amount"]
 	}
 
 	// Build status check URL
-	statusURL := fmt.Sprintf("%s?product_code=%s&total_amount=%d&transaction_uuid=%s",
+	statusURL := fmt.Sprintf("%s?product_code=%s&total_amount=%s&transaction_uuid=%s",
 		p.statusURL,
-		url.QueryEscape(productCode),
-		totalAmount,
+		url.QueryEscape(p.config.ProductCode),
+		url.QueryEscape(totalAmount),
 		url.QueryEscape(transactionUUID))
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
@@ -233,21 +231,24 @@ func (p *Provider) verifyViaStatusAPI(ctx context.Context, req *core.VerifyReque
 
 	var statusResp statusResponse
 	if err := json.Unmarshal(body, &statusResp); err != nil {
-		// Check if it's an error response
-		var errResp errorResponse
-		if json.Unmarshal(body, &errResp) == nil && errResp.ErrorMessage != "" {
-			return nil, fmt.Errorf("%w: %s", core.ErrProviderError, errResp.ErrorMessage)
-		}
 		return nil, fmt.Errorf("%w: failed to parse response: %v", core.ErrProviderError, err)
+	}
+	if statusResp.ErrorMessage != "" {
+		return nil, fmt.Errorf("%w: %s", core.ErrProviderError, statusResp.ErrorMessage)
 	}
 
 	if statusResp.Status == "NOT_FOUND" {
 		return nil, core.ErrPaymentNotFound
 	}
 
-	// Validate amount
+	if req.OriginalOrderID != "" && req.OriginalOrderID != statusResp.TransactionUUID {
+		return nil, fmt.Errorf("%w: order ID mismatch: expected %s, got %s",
+			core.ErrInvalidRequest, req.OriginalOrderID, statusResp.TransactionUUID)
+	}
+
+	// Reply is rupees; convert to paisa.
+	actualAmount := int64(math.Round(statusResp.TotalAmount * 100))
 	if req.ExpectedAmount > 0 {
-		actualAmount := int64(statusResp.TotalAmount)
 		if req.ExpectedAmount != actualAmount {
 			return nil, fmt.Errorf("%w: expected %d, got %d",
 				core.ErrAmountMismatch, req.ExpectedAmount, actualAmount)
@@ -265,7 +266,7 @@ func (p *Provider) verifyViaStatusAPI(ctx context.Context, req *core.VerifyReque
 		Success:        success,
 		TransactionID:  refID,
 		OrderID:        statusResp.TransactionUUID,
-		VerifiedAmount: int64(statusResp.TotalAmount),
+		VerifiedAmount: actualAmount,
 		Currency:       "NPR",
 		Status:         status,
 		ProviderResponse: map[string]string{
@@ -297,30 +298,21 @@ func (p *Provider) generateSignature(message string) string {
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
+// callbackSignedFields is the only field set we accept: trusting the callback's own list lets
+// the checkout-form signature (total_amount,transaction_uuid,product_code) verify a forged COMPLETE.
+const callbackSignedFields = "transaction_code,status,total_amount,transaction_uuid,product_code,signed_field_names"
+
 func (p *Provider) verifyCallbackSignature(callback callbackResponse) error {
-	// Build message from signed fields
-	fields := strings.Split(callback.SignedFieldNames, ",")
-	var parts []string
-	for _, field := range fields {
-		var value string
-		switch field {
-		case "transaction_code":
-			value = callback.TransactionCode
-		case "status":
-			value = callback.Status
-		case "total_amount":
-			value = callback.TotalAmount
-		case "transaction_uuid":
-			value = callback.TransactionUUID
-		case "product_code":
-			value = callback.ProductCode
-		case "signed_field_names":
-			value = callback.SignedFieldNames
-		}
-		parts = append(parts, fmt.Sprintf("%s=%s", field, value))
+	if callback.SignedFieldNames != callbackSignedFields {
+		return fmt.Errorf("%w: unexpected signed_field_names", core.ErrSignatureMismatch)
+	}
+	if callback.ProductCode != p.config.ProductCode {
+		return fmt.Errorf("%w: product code mismatch", core.ErrSignatureMismatch)
 	}
 
-	message := strings.Join(parts, ",")
+	message := fmt.Sprintf("transaction_code=%s,status=%s,total_amount=%s,transaction_uuid=%s,product_code=%s,signed_field_names=%s",
+		callback.TransactionCode, callback.Status, callback.TotalAmount,
+		callback.TransactionUUID, callback.ProductCode, callback.SignedFieldNames)
 	expectedSig := p.generateSignature(message)
 
 	if !hmac.Equal([]byte(expectedSig), []byte(callback.Signature)) {

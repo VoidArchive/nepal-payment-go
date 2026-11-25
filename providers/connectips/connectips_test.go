@@ -2,11 +2,15 @@ package connectips
 
 import (
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -73,6 +77,16 @@ func TestNew(t *testing.T) {
 			config: Config{
 				MerchantID: "MERCHANT001",
 				AppID:      "APP001",
+			},
+			wantErr: core.ErrInvalidConfig,
+			wantNil: true,
+		},
+		{
+			name: "pfx path rejected",
+			config: Config{
+				MerchantID: "MERCHANT001",
+				AppID:      "APP001",
+				CertPath:   "/path/to/CREDITOR.PFX",
 			},
 			wantErr: core.ErrInvalidConfig,
 			wantNil: true,
@@ -208,170 +222,134 @@ func TestInitiatePayment(t *testing.T) {
 	}
 }
 
-func TestTokenGeneration(t *testing.T) {
-	_, pemData := generateTestKey(t)
+// verifyToken checks a base64 SHA256withRSA token against message with the public key.
+func verifyToken(t *testing.T, key *rsa.PrivateKey, message, token string) {
+	t.Helper()
+	sig, err := base64.StdEncoding.DecodeString(token)
+	require.NoError(t, err)
+	hash := sha256.Sum256([]byte(message))
+	assert.NoError(t, rsa.VerifyPKCS1v15(&key.PublicKey, crypto.SHA256, hash[:], sig), "token does not sign %q", message)
+}
 
+func TestInitiationTokenFormat(t *testing.T) {
+	key, pemData := generateTestKey(t)
 	provider, err := New(Config{
-		MerchantID: "MERCHANT001",
-		AppID:      "APP001",
-		AppName:    "Test App",
+		MerchantID: "550",
+		AppID:      "MER-550-APP-1",
+		AppName:    "Test",
 		CertData:   pemData,
 		Sandbox:    true,
 	})
 	require.NoError(t, err)
 
-	tests := []struct {
-		name    string
-		txnID   string
-		amount  int64
-		txnDate string
-	}{
-		{
-			name:    "standard payment",
-			txnID:   "ORDER-123",
-			amount:  1000,
-			txnDate: "14-01-2026",
-		},
-		{
-			name:    "larger amount",
-			txnID:   "ORDER-789",
-			amount:  500000,
-			txnDate: "15-01-2026",
-		},
-	}
+	resp, err := provider.InitiatePayment(context.Background(), &core.PaymentRequest{
+		Amount:      500,
+		OrderID:     "txn123",
+		Description: "PART-001",
+		CallbackURL: "https://example.com/callback",
+	})
+	require.NoError(t, err)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			token, err := provider.generateToken(tt.txnID, tt.amount, tt.txnDate)
-			require.NoError(t, err)
-
-			// Token should be non-empty Base64
-			assert.NotEmpty(t, token)
-
-			// Token should be reproducible
-			token2, err := provider.generateToken(tt.txnID, tt.amount, tt.txnDate)
-			require.NoError(t, err)
-			assert.Equal(t, token, token2, "same input should produce same token")
-
-			// Different input should produce different token
-			token3, err := provider.generateToken(tt.txnID+"x", tt.amount, tt.txnDate)
-			require.NoError(t, err)
-			assert.NotEqual(t, token, token3, "different input should produce different token")
-		})
-	}
+	f := resp.FormFields
+	message := "MERCHANTID=550,APPID=MER-550-APP-1,APPNAME=Test,TXNID=txn123,TXNDATE=" + f["TXNDATE"] +
+		",TXNCRNCY=NPR,TXNAMT=500,REFERENCEID=txn123,REMARKS=PART-001,PARTICULARS=PART-001,TOKEN=TOKEN"
+	verifyToken(t, key, message, f["TOKEN"])
 }
 
 func TestVerifyPayment(t *testing.T) {
-	_, pemData := generateTestKey(t)
+	key, pemData := generateTestKey(t)
 
 	tests := []struct {
-		name           string
-		request        *core.VerifyRequest
-		serverResponse *validationResponse
-		serverStatus   int
-		wantErr        error
-		wantSuccess    bool
-		wantStatus     string
+		name         string
+		request      *core.VerifyRequest
+		serverBody   string
+		serverStatus int
+		wantErr      error
+		wantSuccess  bool
+		wantStatus   string
+		wantAmount   int64
 	}{
 		{
-			name: "successful payment",
+			name: "successful payment, string amount",
 			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{
-					"TXNID":  "ORDER-123",
-					"STATUS": "SUCCESS",
-				},
-				ExpectedAmount: 1000,
+				EncodedParams:  map[string]string{"TXNID": "ORDER-123"},
+				ExpectedAmount: 500,
 			},
-			serverResponse: &validationResponse{
-				Status:      "SUCCESS",
-				TransRefID:  "CIPS123456",
-				ReferenceID: "ORDER-123",
-				TxnAmount:   1000,
-				TokenValid:  true,
-			},
+			serverBody:   `{"merchantId":550,"appId":"MER-550-APP-1","referenceId":"ORDER-123","txnAmt":"500","token":null,"status":"SUCCESS","statusDesc":"TRANSACTION SUCCESSFUL"}`,
 			serverStatus: http.StatusOK,
-			wantErr:      nil,
 			wantSuccess:  true,
 			wantStatus:   core.StatusComplete,
+			wantAmount:   500,
 		},
 		{
-			name: "failed callback status",
+			name: "successful payment, numeric amount",
 			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{
-					"TXNID":  "ORDER-123",
-					"STATUS": "FAILED",
-				},
+				EncodedParams:   map[string]string{"TXNID": "ORDER-123"},
+				OriginalOrderID: "ORDER-123",
+				ExpectedAmount:  1000,
 			},
-			// No server call expected for FAILED callback
-			wantErr:     nil,
-			wantSuccess: false,
-			wantStatus:  core.StatusFailed,
+			serverBody:   `{"merchantId":550,"appId":"MER-550-APP-1","referenceId":"ORDER-123","txnAmt":1000.00,"token":null,"status":"SUCCESS","statusDesc":"TRANSACTION SUCCESSFUL"}`,
+			serverStatus: http.StatusOK,
+			wantSuccess:  true,
+			wantStatus:   core.StatusComplete,
+			wantAmount:   1000,
 		},
 		{
-			name: "cancelled callback status",
+			name: "failed payment",
 			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{
-					"TXNID":  "ORDER-123",
-					"STATUS": "CANCELLED",
-				},
+				EncodedParams:  map[string]string{"TXNID": "ORDER-123"},
+				ExpectedAmount: 1000,
 			},
-			wantErr:     nil,
-			wantSuccess: false,
-			wantStatus:  core.StatusCancelled,
+			serverBody:   `{"merchantId":550,"appId":"MER-550-APP-1","referenceId":"ORDER-123","txnAmt":"1000","token":null,"status":"FAILED","statusDesc":"TRANSACTION FAILED"}`,
+			serverStatus: http.StatusOK,
+			wantSuccess:  false,
+			wantStatus:   core.StatusFailed,
+			wantAmount:   1000,
 		},
 		{
 			name: "amount mismatch",
 			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{
-					"TXNID": "ORDER-123",
-				},
+				EncodedParams:  map[string]string{"TXNID": "ORDER-123"},
 				ExpectedAmount: 1000,
 			},
-			serverResponse: &validationResponse{
-				Status:      "SUCCESS",
-				TransRefID:  "CIPS123456",
-				ReferenceID: "ORDER-123",
-				TxnAmount:   2000, // Different amount!
-				TokenValid:  true,
-			},
+			serverBody:   `{"merchantId":550,"appId":"MER-550-APP-1","referenceId":"ORDER-123","txnAmt":"2000","token":null,"status":"SUCCESS","statusDesc":"TRANSACTION SUCCESSFUL"}`,
 			serverStatus: http.StatusOK,
 			wantErr:      core.ErrAmountMismatch,
 		},
 		{
-			name: "transaction not found",
+			name: "reply referenceId differs",
 			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{
-					"TXNID": "INVALID-ORDER",
-				},
+				EncodedParams:  map[string]string{"TXNID": "ORDER-123"},
 				ExpectedAmount: 1000,
 			},
-			serverResponse: &validationResponse{
-				Status: "NOT_FOUND",
+			serverBody:   `{"merchantId":550,"appId":"MER-550-APP-1","referenceId":"ORDER-999","txnAmt":"1000","token":null,"status":"SUCCESS","statusDesc":"TRANSACTION SUCCESSFUL"}`,
+			serverStatus: http.StatusOK,
+			wantErr:      core.ErrInvalidRequest,
+		},
+		{
+			name: "transaction not found",
+			request: &core.VerifyRequest{
+				EncodedParams:  map[string]string{"TXNID": "INVALID-ORDER"},
+				ExpectedAmount: 1000,
 			},
+			serverBody:   `{"status":"NOT_FOUND"}`,
 			serverStatus: http.StatusOK,
 			wantErr:      core.ErrPaymentNotFound,
 		},
 		{
 			name: "invalid token",
 			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{
-					"TXNID": "ORDER-123",
-				},
+				EncodedParams:  map[string]string{"TXNID": "ORDER-123"},
 				ExpectedAmount: 1000,
 			},
-			serverResponse: &validationResponse{
-				Status:     "INVALID_TOKEN",
-				TokenValid: false,
-			},
+			serverBody:   `{"status":"INVALID_TOKEN"}`,
 			serverStatus: http.StatusOK,
 			wantErr:      core.ErrSignatureMismatch,
 		},
 		{
 			name: "server error",
 			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{
-					"TXNID": "ORDER-123",
-				},
+				EncodedParams:  map[string]string{"TXNID": "ORDER-123"},
 				ExpectedAmount: 1000,
 			},
 			serverStatus: http.StatusInternalServerError,
@@ -380,7 +358,24 @@ func TestVerifyPayment(t *testing.T) {
 		{
 			name: "missing TXNID",
 			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{},
+				EncodedParams:  map[string]string{},
+				ExpectedAmount: 1000,
+			},
+			wantErr: core.ErrInvalidRequest,
+		},
+		{
+			name: "missing ExpectedAmount",
+			request: &core.VerifyRequest{
+				EncodedParams: map[string]string{"TXNID": "ORDER-123"},
+			},
+			wantErr: core.ErrInvalidRequest,
+		},
+		{
+			name: "callback TXNID differs from OriginalOrderID",
+			request: &core.VerifyRequest{
+				EncodedParams:   map[string]string{"TXNID": "ORDER-999"},
+				OriginalOrderID: "ORDER-123",
+				ExpectedAmount:  1000,
 			},
 			wantErr: core.ErrInvalidRequest,
 		},
@@ -388,43 +383,30 @@ func TestVerifyPayment(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Skip server setup for callback-only failures
-			if tt.request.EncodedParams["STATUS"] == "FAILED" ||
-				tt.request.EncodedParams["STATUS"] == "CANCELLED" {
-				provider, err := New(Config{
-					MerchantID: "MERCHANT001",
-					AppID:      "APP001",
-					CertData:   pemData,
-					Sandbox:    true,
-				})
-				require.NoError(t, err)
-
-				resp, err := provider.VerifyPayment(context.Background(), tt.request)
-				require.NoError(t, err)
-				assert.Equal(t, tt.wantSuccess, resp.Success)
-				assert.Equal(t, tt.wantStatus, resp.Status)
-				return
-			}
-
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assert.Equal(t, http.MethodPost, r.Method)
 				assert.Contains(t, r.URL.Path, "/api/creditor/validatetxn")
+				user, pass, ok := r.BasicAuth()
+				assert.True(t, ok)
+				assert.Equal(t, "APP001", user)
+				assert.Equal(t, "secret", pass)
 
-				if tt.serverStatus != http.StatusOK {
-					w.WriteHeader(tt.serverStatus)
-					return
-				}
+				var body validationRequest
+				assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+				verifyToken(t, key, fmt.Sprintf("MERCHANTID=MERCHANT001,APPID=APP001,REFERENCEID=%s,TXNAMT=%d",
+					body.ReferenceID, body.TxnAmount), body.Token)
 
-				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(tt.serverResponse) //nolint:errcheck
+				w.WriteHeader(tt.serverStatus)
+				_, _ = w.Write([]byte(tt.serverBody))
 			}))
 			defer server.Close()
 
 			provider, err := New(Config{
-				MerchantID: "MERCHANT001",
-				AppID:      "APP001",
-				CertData:   pemData,
-				Sandbox:    true,
+				MerchantID:  "MERCHANT001",
+				AppID:       "APP001",
+				AppPassword: "secret",
+				CertData:    pemData,
+				Sandbox:     true,
 			})
 			require.NoError(t, err)
 			provider.validationURL = server.URL + "/api/creditor/validatetxn"
@@ -439,6 +421,7 @@ func TestVerifyPayment(t *testing.T) {
 				require.NotNil(t, resp)
 				assert.Equal(t, tt.wantSuccess, resp.Success)
 				assert.Equal(t, tt.wantStatus, resp.Status)
+				assert.Equal(t, tt.wantAmount, resp.VerifiedAmount)
 			}
 		})
 	}

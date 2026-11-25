@@ -13,13 +13,13 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/crypto/pkcs12"
 
 	"github.com/voidarchive/nepal-payment-go/core"
 )
@@ -34,18 +34,16 @@ const (
 
 // Config holds ConnectIPS provider configuration.
 type Config struct {
-	MerchantID   string        // Creditor merchant ID from ConnectIPS
-	AppID        string        // Application ID from ConnectIPS
-	AppName      string        // Application name for display
-	AppPassword  string        // Password for Basic Auth (API access)
-	CertPath     string        // Path to .pfx or .pem certificate file
-	CertPassword string        // Password for .pfx file (empty for .pem)
-	CertData     []byte        // Raw certificate data (alternative to CertPath)
-	CertFormat   string        // "pfx" or "pem" (required when using CertData)
-	SuccessURL   string        // Redirect URL after successful payment
-	FailureURL   string        // Redirect URL after failed payment
-	Sandbox      bool          // Use sandbox environment
-	Timeout      time.Duration // HTTP client timeout (default: 30s)
+	MerchantID  string        // Creditor merchant ID from ConnectIPS
+	AppID       string        // Application ID from ConnectIPS
+	AppName     string        // Application name for display
+	AppPassword string        // Password for Basic Auth (API access)
+	CertPath    string        // Path to the PEM (or DER) RSA private key; convert NCHL's .pfx first (see README)
+	CertData    []byte        // Raw PEM (or DER) private key (alternative to CertPath)
+	SuccessURL  string        // Redirect URL after successful payment
+	FailureURL  string        // Redirect URL after failed payment
+	Sandbox     bool          // Use sandbox environment
+	Timeout     time.Duration // HTTP client timeout (default: 30s)
 }
 
 // Provider implements core.Provider for ConnectIPS payments.
@@ -67,6 +65,9 @@ func New(cfg Config) (*Provider, error) {
 	}
 	if cfg.CertPath == "" && len(cfg.CertData) == 0 {
 		return nil, fmt.Errorf("%w: CertPath or CertData is required", core.ErrInvalidConfig)
+	}
+	if ext := strings.ToLower(filepath.Ext(cfg.CertPath)); ext == ".pfx" || ext == ".p12" {
+		return nil, fmt.Errorf("%w: CertPath %q is a PKCS#12 file; convert it to a PEM private key once (see README, ConnectIPS)", core.ErrInvalidConfig, cfg.CertPath)
 	}
 
 	// Load certificate
@@ -103,15 +104,6 @@ func (p *Provider) InitiatePayment(ctx context.Context, req *core.PaymentRequest
 		return nil, err
 	}
 
-	// Current date in DD-MM-YYYY format
-	txnDate := time.Now().Format("02-01-2006")
-
-	// Generate token: sign the message with RSA-SHA256
-	token, err := p.generateToken(req.OrderID, req.Amount, txnDate)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to generate token: %v", core.ErrProviderError, err)
-	}
-
 	successURL := p.config.SuccessURL
 	if successURL == "" {
 		successURL = req.CallbackURL
@@ -127,16 +119,21 @@ func (p *Provider) InitiatePayment(ctx context.Context, req *core.PaymentRequest
 		"APPID":       p.config.AppID,
 		"APPNAME":     p.config.AppName,
 		"TXNID":       req.OrderID,
-		"TXNDATE":     txnDate,
+		"TXNDATE":     time.Now().Format("02-01-2006"),
 		"TXNCRNCY":    "NPR",
 		"TXNAMT":      strconv.FormatInt(req.Amount, 10),
 		"REFERENCEID": req.OrderID,
 		"REMARKS":     req.Description,
 		"PARTICULARS": req.Description,
-		"TOKEN":       token,
 		"SUCCESSURL":  successURL,
 		"FAILUREURL":  failureURL,
 	}
+
+	token, err := p.generateToken(formFields)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to generate token: %v", core.ErrProviderError, err)
+	}
+	formFields["TOKEN"] = token
 
 	return &core.PaymentResponse{
 		IsFormPOST:    true,
@@ -148,33 +145,25 @@ func (p *Provider) InitiatePayment(ctx context.Context, req *core.PaymentRequest
 
 // VerifyPayment validates callback data and confirms payment status.
 // Expects EncodedParams["TXNID"] to contain the transaction ID from callback.
+// connectIPS appends only TXNID to the redirect URL, so the result always comes from the validation API.
 func (p *Provider) VerifyPayment(ctx context.Context, req *core.VerifyRequest) (*core.VerifyResponse, error) {
-	// Get transaction ID from callback
-	txnID := req.EncodedParams["TXNID"]
+	callbackTxnID := req.EncodedParams["TXNID"]
+	if req.OriginalOrderID != "" && callbackTxnID != "" && req.OriginalOrderID != callbackTxnID {
+		return nil, fmt.Errorf("%w: order ID mismatch: expected %s, got %s",
+			core.ErrInvalidRequest, req.OriginalOrderID, callbackTxnID)
+	}
+	txnID := callbackTxnID
 	if txnID == "" {
 		txnID = req.OriginalOrderID
 	}
 	if txnID == "" {
 		return nil, fmt.Errorf("%w: TXNID not found in callback", core.ErrInvalidRequest)
 	}
-
-	// Check callback status first
-	callbackStatus := req.EncodedParams["STATUS"]
-	if callbackStatus == "FAILED" || callbackStatus == "CANCELLED" {
-		return &core.VerifyResponse{
-			Success:       false,
-			TransactionID: req.EncodedParams["TRANSACTIONREFID"],
-			OrderID:       txnID,
-			Status:        p.normalizeStatus(callbackStatus),
-			ProviderResponse: map[string]string{
-				"status":     callbackStatus,
-				"status_msg": req.EncodedParams["STATUS_MSG"],
-			},
-			VerifiedAt: time.Now().Unix(),
-		}, nil
+	// The validation API signs and checks the amount, so it cannot be skipped.
+	if req.ExpectedAmount <= 0 {
+		return nil, fmt.Errorf("%w: ExpectedAmount is required for ConnectIPS", core.ErrInvalidRequest)
 	}
 
-	// Validate transaction via API
 	return p.validateTransaction(ctx, txnID, req.ExpectedAmount)
 }
 
@@ -235,31 +224,43 @@ func (p *Provider) validateTransaction(ctx context.Context, txnID string, expect
 	if valResp.Status == statusNotFound {
 		return nil, core.ErrPaymentNotFound
 	}
-	if valResp.Status == statusInvalidToken || !valResp.TokenValid {
+	if valResp.Status == statusInvalidToken {
 		return nil, fmt.Errorf("%w: invalid token", core.ErrSignatureMismatch)
 	}
 
-	// Validate amount
-	if expectedAmount > 0 && expectedAmount != valResp.TxnAmount {
-		return nil, fmt.Errorf("%w: expected %d, got %d",
-			core.ErrAmountMismatch, expectedAmount, valResp.TxnAmount)
+	// A failed reply may omit referenceId and txnAmt; only a present value can mismatch.
+	if valResp.ReferenceID != "" && valResp.ReferenceID != txnID {
+		return nil, fmt.Errorf("%w: order ID mismatch: expected %s, got %s",
+			core.ErrInvalidRequest, txnID, valResp.ReferenceID)
 	}
 
+	// txnAmt is paisa, sent either as a string ("500") or a number (1000.00).
 	success := valResp.Status == statusSuccess
+	var verifiedAmount int64
+	if success || valResp.TxnAmt != "" {
+		amount, err := strconv.ParseFloat(valResp.TxnAmt.String(), 64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid txnAmt %q: %v", core.ErrProviderError, valResp.TxnAmt, err)
+		}
+		verifiedAmount = int64(math.Round(amount))
+		if expectedAmount != verifiedAmount {
+			return nil, fmt.Errorf("%w: expected %d, got %d",
+				core.ErrAmountMismatch, expectedAmount, verifiedAmount)
+		}
+	}
 
 	return &core.VerifyResponse{
 		Success:        success,
-		TransactionID:  valResp.TransRefID,
-		OrderID:        valResp.ReferenceID,
-		VerifiedAmount: valResp.TxnAmount,
+		TransactionID:  "", // the validation reply carries no connectIPS transaction ID
+		OrderID:        txnID,
+		VerifiedAmount: verifiedAmount,
 		Currency:       "NPR",
 		Status:         normalizedStatus,
 		ProviderResponse: map[string]string{
 			"status":       valResp.Status,
 			"status_desc":  valResp.StatusDesc,
-			"trans_ref_id": valResp.TransRefID,
 			"reference_id": valResp.ReferenceID,
-			"txn_date":     valResp.TxnDate,
+			"txn_amt":      valResp.TxnAmt.String(),
 		},
 		VerifiedAt: time.Now().Unix(),
 	}, nil
@@ -278,28 +279,23 @@ func (p *Provider) validateRequest(req *core.PaymentRequest) error {
 	return nil
 }
 
-// generateToken creates the signed token for payment initiation.
-// Message format: MERCHANTID,APPID,RETEFID,TXNAMT,TXNID
-func (p *Provider) generateToken(txnID string, amount int64, txnDate string) (string, error) {
-	message := fmt.Sprintf("%s,%s,%s,%d,%s",
-		p.config.MerchantID,
-		p.config.AppID,
-		txnID,
-		amount,
-		txnDate,
-	)
-	return p.signMessage(message)
+// tokenFields is the order connectIPS signs the initiation form fields in.
+var tokenFields = []string{"MERCHANTID", "APPID", "APPNAME", "TXNID", "TXNDATE", "TXNCRNCY", "TXNAMT", "REFERENCEID", "REMARKS", "PARTICULARS"}
+
+// generateToken signs the initiation form fields, so the signed values are the posted ones.
+// Message format: MERCHANTID=<v>,APPID=<v>,...,PARTICULARS=<v>,TOKEN=TOKEN
+func (p *Provider) generateToken(fields map[string]string) (string, error) {
+	parts := make([]string, 0, len(tokenFields)+1)
+	for _, k := range tokenFields {
+		parts = append(parts, k+"="+fields[k])
+	}
+	return p.signMessage(strings.Join(append(parts, "TOKEN=TOKEN"), ","))
 }
 
 // generateValidationToken creates the signed token for validation API.
 func (p *Provider) generateValidationToken(txnID string, amount int64) (string, error) {
-	message := fmt.Sprintf("%s,%s,%s,%d",
-		p.config.MerchantID,
-		p.config.AppID,
-		txnID,
-		amount,
-	)
-	return p.signMessage(message)
+	return p.signMessage(fmt.Sprintf("MERCHANTID=%s,APPID=%s,REFERENCEID=%s,TXNAMT=%d",
+		p.config.MerchantID, p.config.AppID, txnID, amount))
 }
 
 // signMessage signs a message with SHA256withRSA and returns Base64-encoded signature.
@@ -327,45 +323,16 @@ func (p *Provider) normalizeStatus(status string) string {
 	}
 }
 
-// loadPrivateKey loads the RSA private key from PFX or PEM file/data.
+// loadPrivateKey loads the RSA private key from a PEM (or DER) file or data.
 func loadPrivateKey(cfg Config) (*rsa.PrivateKey, error) {
-	var certData []byte
-	var err error
-	var isPFX bool
-
 	if len(cfg.CertData) > 0 {
-		certData = cfg.CertData
-		// Use CertFormat to determine format when using raw data
-		isPFX = strings.EqualFold(cfg.CertFormat, "pfx") || strings.EqualFold(cfg.CertFormat, "p12")
-	} else {
-		certData, err = os.ReadFile(cfg.CertPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read certificate file: %w", err)
-		}
-		// Detect format from file extension
-		lowerPath := strings.ToLower(cfg.CertPath)
-		isPFX = strings.HasSuffix(lowerPath, ".pfx") || strings.HasSuffix(lowerPath, ".p12")
+		return loadFromPEM(cfg.CertData)
 	}
-
-	if isPFX {
-		return loadFromPFX(certData, cfg.CertPassword)
-	}
-
-	return loadFromPEM(certData)
-}
-
-func loadFromPFX(data []byte, password string) (*rsa.PrivateKey, error) {
-	privateKey, _, err := pkcs12.Decode(data, password)
+	certData, err := os.ReadFile(cfg.CertPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode PFX: %w", err)
+		return nil, fmt.Errorf("failed to read certificate file: %w", err)
 	}
-
-	rsaKey, ok := privateKey.(*rsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("certificate does not contain RSA private key")
-	}
-
-	return rsaKey, nil
+	return loadFromPEM(certData)
 }
 
 func loadFromPEM(data []byte) (*rsa.PrivateKey, error) {

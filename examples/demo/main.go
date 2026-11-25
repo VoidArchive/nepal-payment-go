@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/voidarchive/nepal-payment-go/core"
 	"github.com/voidarchive/nepal-payment-go/providers/connectips"
@@ -94,13 +95,12 @@ func initProviders() {
 	// ConnectIPS - requires cert
 	if os.Getenv("CONNECTIPS_MERCHANT_ID") != "" && os.Getenv("CONNECTIPS_CERT_PATH") != "" {
 		connectipsProvider, err = connectips.New(connectips.Config{
-			MerchantID:   os.Getenv("CONNECTIPS_MERCHANT_ID"),
-			AppID:        os.Getenv("CONNECTIPS_APP_ID"),
-			AppName:      os.Getenv("CONNECTIPS_APP_NAME"),
-			AppPassword:  os.Getenv("CONNECTIPS_APP_PASSWORD"),
-			CertPath:     os.Getenv("CONNECTIPS_CERT_PATH"),
-			CertPassword: os.Getenv("CONNECTIPS_CERT_PASSWORD"),
-			Sandbox:      true,
+			MerchantID:  os.Getenv("CONNECTIPS_MERCHANT_ID"),
+			AppID:       os.Getenv("CONNECTIPS_APP_ID"),
+			AppName:     os.Getenv("CONNECTIPS_APP_NAME"),
+			AppPassword: os.Getenv("CONNECTIPS_APP_PASSWORD"),
+			CertPath:    os.Getenv("CONNECTIPS_CERT_PATH"),
+			Sandbox:     true,
 		})
 		if err != nil {
 			log.Printf("✗ ConnectIPS init failed: %v", err)
@@ -142,8 +142,8 @@ func handleEsewaCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := esewaProvider.InitiatePayment(r.Context(), &core.PaymentRequest{
-		Amount:      100,
-		OrderID:     fmt.Sprintf("ESEWA-%d", os.Getpid()),
+		Amount:      10000, // paisa (Rs 100)
+		OrderID:     fmt.Sprintf("ESEWA-%d", time.Now().UnixNano()),
 		Description: "Premium Subscription",
 		CallbackURL: "http://localhost:8080/payment/esewa/success",
 	})
@@ -164,8 +164,8 @@ func handleKhaltiCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := khaltiProvider.InitiatePayment(r.Context(), &core.PaymentRequest{
-		Amount:      10000, // Khalti uses paisa
-		OrderID:     fmt.Sprintf("KHALTI-%d", os.Getpid()),
+		Amount:      10000, // paisa (Rs 100)
+		OrderID:     fmt.Sprintf("KHALTI-%d", time.Now().UnixNano()),
 		Description: "Premium Subscription",
 		CallbackURL: "http://localhost:8080/payment/khalti/callback",
 	})
@@ -186,8 +186,8 @@ func handleConnectIPSCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := connectipsProvider.InitiatePayment(r.Context(), &core.PaymentRequest{
-		Amount:      100,
-		OrderID:     fmt.Sprintf("CIPS-%d", os.Getpid()),
+		Amount:      10000, // paisa (Rs 100)
+		OrderID:     fmt.Sprintf("CIPS-%d", time.Now().UnixNano()),
 		Description: "Premium Subscription",
 		CallbackURL: "http://localhost:8080/payment/connectips/callback",
 	})
@@ -204,8 +204,8 @@ func handleFonepayCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := fonepayProvider.InitiatePayment(r.Context(), &core.PaymentRequest{
-		Amount:      100,
-		OrderID:     fmt.Sprintf("FP-%d", os.Getpid()),
+		Amount:      10000, // paisa (Rs 100)
+		OrderID:     fmt.Sprintf("FP-%d", time.Now().UnixNano()),
 		Description: "Premium Subscription",
 		CallbackURL: "http://localhost:8080/payment/fonepay/callback",
 	})
@@ -217,7 +217,7 @@ func handleFonepayCheckout(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleEsewaCallback(w http.ResponseWriter, r *http.Request) {
-	handleCallback(w, r, esewaProvider, 100, "eSewa")
+	handleCallback(w, r, esewaProvider, 10000, "eSewa")
 }
 
 func handleEsewaFailure(w http.ResponseWriter, r *http.Request) {
@@ -234,11 +234,11 @@ func handleKhaltiCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleConnectIPSCallback(w http.ResponseWriter, r *http.Request) {
-	handleCallback(w, r, connectipsProvider, 100, "ConnectIPS")
+	handleCallback(w, r, connectipsProvider, 10000, "ConnectIPS")
 }
 
 func handleFonepayCallback(w http.ResponseWriter, r *http.Request) {
-	handleCallback(w, r, fonepayProvider, 100, "FonePay")
+	handleCallback(w, r, fonepayProvider, 10000, "FonePay")
 }
 
 func handleCallback(w http.ResponseWriter, r *http.Request, p core.Provider, amount int64, name string) {
@@ -262,13 +262,9 @@ func handleCallback(w http.ResponseWriter, r *http.Request, p core.Provider, amo
 	}
 
 	if result.Success {
-		displayAmount := float64(result.VerifiedAmount)
-		if name == "Khalti" {
-			displayAmount /= 100 // Khalti uses paisa
-		}
 		renderResult(w, true, "Payment Successful!",
-			fmt.Sprintf("Provider: %s<br>Transaction ID: %s<br>Amount: NPR %.2f",
-				name, result.TransactionID, displayAmount), params)
+			fmt.Sprintf("Provider: %s\nTransaction ID: %s\nAmount: NPR %.2f",
+				name, result.TransactionID, float64(result.VerifiedAmount)/100), params)
 	} else {
 		renderResult(w, false, "Payment Not Completed",
 			fmt.Sprintf("Status: %s", result.Status), params)
@@ -318,12 +314,13 @@ func renderResult(w http.ResponseWriter, success bool, title, message string, pa
         h1 { color: {{.Color}}; }
         .params { background: #f5f5f5; padding: 10px; border-radius: 4px; font-size: 12px; }
         a { color: #007bff; }
+        .msg { white-space: pre-line; }
     </style>
 </head>
 <body>
     <div class="card">
         <h1>{{.Title}}</h1>
-        <p>{{.Message}}</p>
+        <p class="msg">{{.Message}}</p>
         <p><a href="/">Back to Store</a></p>
     </div>
     {{if .Params}}<details><summary>Debug: Callback Parameters</summary>
@@ -338,7 +335,7 @@ func renderResult(w http.ResponseWriter, success bool, title, message string, pa
 	w.Header().Set("Content-Type", "text/html")
 	_ = tmpl.Execute(w, map[string]any{ //nolint:errcheck
 		"Title":   title,
-		"Message": template.HTML(message),
+		"Message": message,
 		"Color":   color,
 		"Params":  sb.String(),
 	})

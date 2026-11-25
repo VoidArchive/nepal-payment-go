@@ -21,10 +21,5 @@ type statusResponse struct {
 	TotalAmount     float64 `json:"total_amount"`
 	Status          string  `json:"status"`
 	RefID           *string `json:"ref_id"`
-}
-
-// errorResponse is returned when the status check API fails.
-type errorResponse struct {
-	Code         int    `json:"code"`
-	ErrorMessage string `json:"error_message"`
+	ErrorMessage    string  `json:"error_message"` // set on error replies, e.g. {"code":0,"error_message":"..."}
 }

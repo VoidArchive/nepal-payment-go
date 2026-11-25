@@ -3,7 +3,7 @@
 A unified payment SDK for Nepal supporting multiple payment providers with a consistent API.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/voidarchive/nepal-payment-go.svg)](https://pkg.go.dev/github.com/voidarchive/nepal-payment-go)
-[![Go Report Card](https://goreportcard.com/badge/github.com/voidarchive/nepal-payment-go)](https://goreportcard.com/report/github.com/voidarchive/nepal-payment-go)
+[![CI](https://github.com/voidarchive/nepal-payment-go/actions/workflows/ci.yml/badge.svg)](https://github.com/voidarchive/nepal-payment-go/actions/workflows/ci.yml)
 
 ## Features
 
@@ -11,7 +11,7 @@ A unified payment SDK for Nepal supporting multiple payment providers with a con
 - **Type-safe** - Strongly typed requests and responses
 - **Production-ready** - Proper error handling, timeouts, and logging
 - **Well-tested** - Comprehensive test coverage
-- **Zero dependencies** - Uses only Go standard library (except `golang.org/x/crypto` for ConnectIPS)
+- **Zero dependencies** - Uses only the Go standard library
 
 ## Supported Providers
 
@@ -30,6 +30,8 @@ go get github.com/voidarchive/nepal-payment-go
 
 ## Quick Start
 
+`Amount` is always in paisa (1/100 rupee) for every provider: Rs 100 = `10000`. This changed for eSewa and FonePay, which used to take rupees.
+
 ### eSewa (Wallet)
 
 ```go
@@ -43,7 +45,7 @@ provider, _ := esewa.New(esewa.Config{
 
 // Initiate payment
 resp, _ := provider.InitiatePayment(ctx, &core.PaymentRequest{
-    Amount:      100,
+    Amount:      10000,  // In paisa (NPR 100)
     OrderID:     "ORDER-123",
     CallbackURL: "https://yoursite.com/callback",
 })
@@ -79,16 +81,15 @@ resp, _ := provider.InitiatePayment(ctx, &core.PaymentRequest{
 import "github.com/voidarchive/nepal-payment-go/providers/connectips"
 
 provider, _ := connectips.New(connectips.Config{
-    MerchantID:   os.Getenv("CONNECTIPS_MERCHANT_ID"),
-    AppID:        os.Getenv("CONNECTIPS_APP_ID"),
-    AppPassword:  os.Getenv("CONNECTIPS_APP_PASSWORD"),
-    CertPath:     "/path/to/creditor.pfx",
-    CertPassword: os.Getenv("CONNECTIPS_CERT_PASSWORD"),
-    Sandbox:      true,
+    MerchantID:  os.Getenv("CONNECTIPS_MERCHANT_ID"),
+    AppID:       os.Getenv("CONNECTIPS_APP_ID"),
+    AppPassword: os.Getenv("CONNECTIPS_APP_PASSWORD"),
+    CertPath:    "/path/to/creditor.pem", // converted from NCHL's .pfx, see below
+    Sandbox:     true,
 })
 
 resp, _ := provider.InitiatePayment(ctx, &core.PaymentRequest{
-    Amount:      100,
+    Amount:      10000,  // In paisa (NPR 100)
     OrderID:     "ORDER-123",
     CallbackURL: "https://yoursite.com/callback",
 })
@@ -109,7 +110,7 @@ provider, _ := fonepay.New(fonepay.Config{
 })
 
 resp, _ := provider.InitiatePayment(ctx, &core.PaymentRequest{
-    Amount:      100,
+    Amount:      10000,  // In paisa (NPR 100)
     OrderID:     "ORDER-123",
     CallbackURL: "https://yoursite.com/callback",
 })
@@ -133,7 +134,7 @@ provider, _ := fonepay.New(fonepay.Config{
 
 // Generate QR code
 qr, _ := provider.GenerateQR(ctx, &fonepay.QRRequest{
-    Amount:      500,
+    Amount:      500,  // QRRequest takes rupees (NPR 500), not paisa
     OrderID:     "TABLE-42",
     Description: "Coffee Shop Order",
 })
@@ -150,8 +151,9 @@ All providers use the same verification pattern:
 
 ```go
 result, err := provider.VerifyPayment(ctx, &core.VerifyRequest{
-    EncodedParams:  callbackParams,  // Query params from callback
-    ExpectedAmount: 100,
+    EncodedParams:   callbackParams,  // Query params from callback
+    OriginalOrderID: "ORDER-123",     // Callback for a different order is rejected
+    ExpectedAmount:  10000,           // In paisa; 0 skips the check
 })
 
 if err != nil {
@@ -168,6 +170,8 @@ if result.Success {
 }
 ```
 
+Khalti does not check `OriginalOrderID`: match the callback `pidx` to the `TransactionID` returned by `InitiatePayment` yourself before verifying. ConnectIPS requires `ExpectedAmount` (it returns an error when it is 0).
+
 ## Running the Demo
 
 ### Combined Demo (All Providers)
@@ -177,15 +181,6 @@ go run ./examples/demo/
 ```
 
 Open http://localhost:8080
-
-### Individual Provider Demos
-
-```bash
-go run ./examples/esewa/      # eSewa demo
-go run ./examples/khalti/     # Khalti demo (needs KHALTI_SECRET_KEY)
-go run ./examples/connectips/ # ConnectIPS demo (needs credentials)
-go run ./examples/fonepay/    # FonePay demo
-```
 
 ## Sandbox Credentials
 
@@ -211,7 +206,17 @@ go run ./examples/fonepay/    # FonePay demo
 ### ConnectIPS
 
 Requires merchant onboarding with [Nepal Clearing House (NCHL)](https://nchl.com.np).
-You'll receive: Merchant ID, App ID, and `.pfx` certificate.
+You'll receive: Merchant ID, App ID, and a `.pfx` certificate.
+
+The SDK reads a PEM private key, not the `.pfx`. Convert it once with OpenSSL (it asks for the PFX password):
+
+```bash
+openssl pkcs12 -in CREDITOR.pfx -nocerts -nodes -out creditor.pem
+```
+
+If OpenSSL 3 fails with an unsupported-algorithm error (older PFX files use RC2 encryption), add `-legacy`.
+
+Then point `CertPath` (or `CONNECTIPS_CERT_PATH`) at `creditor.pem`. The PEM has no password, so keep it out of git and lock it down with `chmod 600 creditor.pem`.
 
 ### FonePay
 
@@ -236,8 +241,7 @@ KHALTI_SECRET_KEY=your_key_here
 CONNECTIPS_MERCHANT_ID=your_merchant_id
 CONNECTIPS_APP_ID=your_app_id
 CONNECTIPS_APP_PASSWORD=your_password
-CONNECTIPS_CERT_PATH=/path/to/creditor.pfx
-CONNECTIPS_CERT_PASSWORD=cert_password
+CONNECTIPS_CERT_PATH=/path/to/creditor.pem
 
 # FonePay (optional - has sandbox defaults)
 FONEPAY_MERCHANT_CODE=NBQM
@@ -259,11 +263,7 @@ FONEPAY_SECRET_KEY=a7e3512f5032480a83137793cb2021dc
 │   ├── connectips/         # ConnectIPS implementation
 │   └── fonepay/            # FonePay implementation
 └── examples/
-    ├── demo/               # Combined demo (all providers)
-    ├── esewa/              # eSewa standalone demo
-    ├── khalti/             # Khalti standalone demo
-    ├── connectips/         # ConnectIPS standalone demo
-    └── fonepay/            # FonePay standalone demo
+    └── demo/               # Combined demo (all providers)
 ```
 
 ## Core Types
@@ -271,7 +271,7 @@ FONEPAY_SECRET_KEY=a7e3512f5032480a83137793cb2021dc
 ```go
 // PaymentRequest initiates a payment
 type PaymentRequest struct {
-    Amount        int64   // Amount in smallest unit
+    Amount        int64   // In paisa (Rs 100 = 10000)
     Currency      string  // Usually "NPR"
     OrderID       string  // Your unique order ID
     Description   string  // Payment description
@@ -285,17 +285,26 @@ type PaymentResponse struct {
     IsFormPOST    bool              // true = POST form, false = redirect
     TargetURL     string            // Where to send user
     FormFields    map[string]string // Form fields (if IsFormPOST)
-    TransactionID string            // Provider's transaction ID
+    TransactionID string            // Provider's transaction ID (Khalti: pidx)
+}
+
+// VerifyRequest for VerifyPayment
+type VerifyRequest struct {
+    EncodedParams   map[string]string // Callback params
+    OriginalOrderID string            // Rejects a callback for another order (not Khalti)
+    ExpectedAmount  int64             // In paisa; 0 skips (required for ConnectIPS)
 }
 
 // VerifyResponse from VerifyPayment
 type VerifyResponse struct {
-    Success        bool
-    TransactionID  string
-    OrderID        string
-    VerifiedAmount int64
-    Currency       string
-    Status         string  // StatusComplete, StatusPending, etc.
+    Success          bool
+    TransactionID    string
+    OrderID          string
+    VerifiedAmount   int64             // In paisa
+    Currency         string
+    Status           string            // StatusComplete, StatusPending, etc.
+    ProviderResponse map[string]string // Raw response for debugging
+    VerifiedAt       int64             // Unix seconds
 }
 ```
 
@@ -315,12 +324,12 @@ core.ErrTimeout          // Request timed out
 core.ErrRateLimited      // Rate limit exceeded
 
 // Status constants
-core.StatusComplete   // "complete"
-core.StatusPending    // "pending"
-core.StatusFailed     // "failed"
-core.StatusCancelled  // "cancelled"
-core.StatusExpired    // "expired"
-core.StatusRefunded   // "refunded"
+core.StatusComplete   // "COMPLETE"
+core.StatusPending    // "PENDING"
+core.StatusFailed     // "FAILED"
+core.StatusCancelled  // "CANCELLED"
+core.StatusExpired    // "EXPIRED"
+core.StatusRefunded   // "REFUNDED"
 ```
 
 ## Testing
@@ -334,6 +343,9 @@ go test ./providers/esewa/... -v
 go test ./providers/khalti/... -v
 go test ./providers/connectips/... -v
 go test ./providers/fonepay/... -v
+
+# Lint (same check CI runs)
+golangci-lint run ./...
 ```
 
 ## Security Notes
@@ -342,7 +354,7 @@ go test ./providers/fonepay/... -v
 2. **Always verify payments** server-side before fulfilling orders
 3. **Validate amounts** to prevent price manipulation
 4. **Use HTTPS** in production for callback URLs
-5. **Store certificates securely** (ConnectIPS .pfx files)
+5. **Store the ConnectIPS private key securely** (`creditor.pem` has no password: keep it out of git, `chmod 600`)
 
 ## Contributing
 
