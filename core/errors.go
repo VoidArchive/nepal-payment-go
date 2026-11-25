@@ -5,18 +5,14 @@ import "errors"
 // Sentinel errors for consistent error handling across providers.
 // Use errors.Is() to check; providers should wrap these with context.
 var (
-	ErrPaymentNotFound      = errors.New("payment: transaction not found")
-	ErrSignatureMismatch    = errors.New("payment: signature verification failed")
-	ErrAmountMismatch       = errors.New("payment: amount mismatch")
-	ErrProviderError        = errors.New("payment: provider error")
-	ErrInvalidConfig        = errors.New("payment: invalid provider configuration")
-	ErrInvalidRequest       = errors.New("payment: invalid request")
-	ErrPaymentFailed        = errors.New("payment: payment failed")
-	ErrPaymentPending       = errors.New("payment: payment pending")
-	ErrDuplicateRequest     = errors.New("payment: duplicate order ID")
-	ErrRateLimited          = errors.New("payment: rate limit exceeded")
-	ErrUnsupportedOperation = errors.New("payment: operation not supported")
-	ErrTimeout              = errors.New("payment: operation timed out")
+	ErrPaymentNotFound   = errors.New("payment: transaction not found")
+	ErrSignatureMismatch = errors.New("payment: signature verification failed")
+	ErrAmountMismatch    = errors.New("payment: amount mismatch")
+	ErrProviderError     = errors.New("payment: provider error")
+	ErrInvalidConfig     = errors.New("payment: invalid provider configuration")
+	ErrInvalidRequest    = errors.New("payment: invalid request")
+	ErrRateLimited       = errors.New("payment: rate limit exceeded")
+	ErrTimeout           = errors.New("payment: operation timed out")
 )
 
 // Normalized payment status values.

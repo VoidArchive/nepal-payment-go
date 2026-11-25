@@ -11,7 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/voidarchive/nepal-payment-go/core"
+	"github.com/voidarchive/nepal-payment-go/v2/core"
 )
 
 const testSecretKey = "a7e3512f5032480a83137793cb2021dc"
@@ -105,7 +105,7 @@ func TestInitiatePayment(t *testing.T) {
 			checkURLContains: []string{
 				"PID=NBQM",
 				"PRN=ORDER-123",
-				"AMT=1000",
+				"AMT=10.00",
 				"CRN=NPR",
 				"DV=",
 			},
@@ -218,14 +218,29 @@ func TestHMACGeneration(t *testing.T) {
 	}
 }
 
-func TestVerifyPayment(t *testing.T) {
-	// Helper to generate valid HMAC for callback
-	generateCallbackDV := func(prn, bid, uid string) string {
-		message := fmt.Sprintf("%s,%s,%s", prn, bid, uid)
-		mac := hmac.New(sha512.New, []byte(testSecretKey))
-		mac.Write([]byte(message))
-		return hex.EncodeToString(mac.Sum(nil))
+// callback builds FonePay return-URL params, applies overrides, then signs
+// PRN,PID,PS,RC,UID,BC,INI,P_AMT,R_AMT unless DV was overridden.
+func callback(overrides map[string]string) map[string]string {
+	q := map[string]string{
+		"PRN": "ORDER-123", "PID": "NBQM", "PS": "true", "RC": "successful", "UID": "TXN123456",
+		"BC": "NICENPKA", "INI": "9800000000", "P_AMT": "100.0", "R_AMT": "100.0",
 	}
+	for k, v := range overrides {
+		q[k] = v
+	}
+	if _, ok := overrides["DV"]; !ok {
+		msg := strings.Join([]string{q["PRN"], q["PID"], q["PS"], q["RC"], q["UID"], q["BC"], q["INI"], q["P_AMT"], q["R_AMT"]}, ",")
+		mac := hmac.New(sha512.New, []byte(testSecretKey))
+		mac.Write([]byte(msg))
+		q["DV"] = strings.ToUpper(hex.EncodeToString(mac.Sum(nil)))
+	}
+	return q
+}
+
+func TestVerifyPayment(t *testing.T) {
+	failedSigned := callback(map[string]string{"PS": "false", "RC": "failed"})
+	tamperedPS := callback(map[string]string{"PS": "false", "RC": "failed"})
+	tamperedPS["PS"] = "true"
 
 	tests := []struct {
 		name        string
@@ -233,91 +248,75 @@ func TestVerifyPayment(t *testing.T) {
 		wantErr     error
 		wantSuccess bool
 		wantStatus  string
+		wantAmount  int64
 	}{
 		{
-			name: "successful payment",
-			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{
-					"PRN": "ORDER-123",
-					"BID": "BANK001",
-					"UID": "TXN123456",
-					"P":   "true",
-					"PS":  "success",
-					"RC":  "successful",
-					"DV":  generateCallbackDV("ORDER-123", "BANK001", "TXN123456"),
-				},
-			},
-			wantErr:     nil,
+			name:        "successful payment",
+			request:     &core.VerifyRequest{EncodedParams: callback(nil), OriginalOrderID: "ORDER-123", ExpectedAmount: 10000},
 			wantSuccess: true,
 			wantStatus:  core.StatusComplete,
+			wantAmount:  10000,
 		},
 		{
-			name: "failed payment",
-			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{
-					"PRN": "ORDER-123",
-					"BID": "BANK001",
-					"UID": "TXN123456",
-					"P":   "false",
-					"PS":  "failed",
-					"RC":  "failed",
-					"DV":  generateCallbackDV("ORDER-123", "BANK001", "TXN123456"),
-				},
-			},
-			wantErr:     nil,
+			name:        "decimal amount",
+			request:     &core.VerifyRequest{EncodedParams: callback(map[string]string{"R_AMT": "100.55", "P_AMT": "101.0"}), ExpectedAmount: 10055},
+			wantSuccess: true,
+			wantStatus:  core.StatusComplete,
+			wantAmount:  10055,
+		},
+		{
+			name:        "failed payment",
+			request:     &core.VerifyRequest{EncodedParams: failedSigned},
 			wantSuccess: false,
 			wantStatus:  core.StatusFailed,
+			wantAmount:  10000,
 		},
 		{
-			name: "cancelled payment",
-			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{
-					"PRN": "ORDER-123",
-					"BID": "BANK001",
-					"UID": "TXN123456",
-					"P":   "false",
-					"RC":  "cancelled",
-					"DV":  generateCallbackDV("ORDER-123", "BANK001", "TXN123456"),
-				},
-			},
-			wantErr:     nil,
+			name:        "cancelled payment",
+			request:     &core.VerifyRequest{EncodedParams: callback(map[string]string{"PS": "false", "RC": "cancel"})},
 			wantSuccess: false,
 			wantStatus:  core.StatusCancelled,
+			wantAmount:  10000,
 		},
 		{
-			name: "invalid signature",
-			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{
-					"PRN": "ORDER-123",
-					"BID": "BANK001",
-					"UID": "TXN123456",
-					"P":   "true",
-					"DV":  "invalid_signature_here",
-				},
-			},
+			name:    "missing DV",
+			request: &core.VerifyRequest{EncodedParams: map[string]string{"PRN": "ORDER-123", "PS": "true"}},
 			wantErr: core.ErrSignatureMismatch,
 		},
 		{
-			name: "missing PRN",
-			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{},
-			},
+			name:    "invalid DV",
+			request: &core.VerifyRequest{EncodedParams: callback(map[string]string{"DV": "deadbeef"})},
+			wantErr: core.ErrSignatureMismatch,
+		},
+		{
+			name:    "tampered PS",
+			request: &core.VerifyRequest{EncodedParams: tamperedPS},
+			wantErr: core.ErrSignatureMismatch,
+		},
+		{
+			name:    "wrong PID",
+			request: &core.VerifyRequest{EncodedParams: callback(map[string]string{"PID": "OTHER"})},
+			wantErr: core.ErrSignatureMismatch,
+		},
+		{
+			name:    "missing PRN",
+			request: &core.VerifyRequest{EncodedParams: callback(map[string]string{"PRN": ""}), OriginalOrderID: "ORDER-123"},
 			wantErr: core.ErrInvalidRequest,
 		},
 		{
-			name: "amount mismatch",
-			request: &core.VerifyRequest{
-				EncodedParams: map[string]string{
-					"PRN": "ORDER-123",
-					"BID": "BANK001",
-					"UID": "TXN123456",
-					"P":   "true",
-					"AMT": "2000",
-					"DV":  generateCallbackDV("ORDER-123", "BANK001", "TXN123456"),
-				},
-				ExpectedAmount: 1000,
-			},
+			name:    "order ID mismatch",
+			request: &core.VerifyRequest{EncodedParams: callback(nil), OriginalOrderID: "ORDER-999"},
+			wantErr: core.ErrInvalidRequest,
+		},
+		{
+			name:    "amount mismatch",
+			request: &core.VerifyRequest{EncodedParams: callback(nil), ExpectedAmount: 20000},
 			wantErr: core.ErrAmountMismatch,
+		},
+		{
+			name:    "missing R_AMT",
+			request: &core.VerifyRequest{EncodedParams: callback(map[string]string{"R_AMT": ""})},
+			wantErr: core.ErrInvalidRequest,
 		},
 	}
 
@@ -335,11 +334,16 @@ func TestVerifyPayment(t *testing.T) {
 			if tt.wantErr != nil {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, tt.wantErr)
+				assert.Nil(t, resp)
 			} else {
 				require.NoError(t, err)
 				require.NotNil(t, resp)
 				assert.Equal(t, tt.wantSuccess, resp.Success)
 				assert.Equal(t, tt.wantStatus, resp.Status)
+				assert.Equal(t, tt.wantAmount, resp.VerifiedAmount)
+				assert.Equal(t, "ORDER-123", resp.OrderID)
+				assert.Equal(t, tt.request.EncodedParams["R_AMT"], resp.ProviderResponse["r_amt"])
+				assert.Equal(t, tt.request.EncodedParams["P_AMT"], resp.ProviderResponse["p_amt"])
 			}
 		})
 	}
@@ -347,20 +351,17 @@ func TestVerifyPayment(t *testing.T) {
 
 func TestStatusNormalization(t *testing.T) {
 	tests := []struct {
-		status         string
+		ps             string
 		rc             string
 		expectedStatus string
 		expectedOK     bool
 	}{
-		{"true", "", core.StatusComplete, true},
-		{"True", "", core.StatusComplete, true},
-		{"TRUE", "", core.StatusComplete, true},
-		{"false", "successful", core.StatusComplete, true},
-		{"false", "pending", core.StatusPending, false},
-		{"false", "cancelled", core.StatusCancelled, false},
-		{"false", "canceled", core.StatusCancelled, false},
+		{"true", "successful", core.StatusComplete, true},
+		{"false", "successful", core.StatusFailed, false},
 		{"false", "failed", core.StatusFailed, false},
-		{"false", "", core.StatusFailed, false},
+		{"false", "cancel", core.StatusCancelled, false},
+		{"false", "cancelled", core.StatusCancelled, false},
+		{"", "", core.StatusFailed, false},
 	}
 
 	provider, _ := New(Config{
@@ -370,9 +371,9 @@ func TestStatusNormalization(t *testing.T) {
 	})
 
 	for _, tt := range tests {
-		name := fmt.Sprintf("P=%s,RC=%s", tt.status, tt.rc)
+		name := fmt.Sprintf("PS=%s,RC=%s", tt.ps, tt.rc)
 		t.Run(name, func(t *testing.T) {
-			status, ok := provider.normalizeStatus(tt.status, tt.rc)
+			status, ok := provider.normalizeStatus(tt.ps, tt.rc)
 			assert.Equal(t, tt.expectedStatus, status)
 			assert.Equal(t, tt.expectedOK, ok)
 		})
@@ -399,7 +400,7 @@ func TestURLGeneration(t *testing.T) {
 	assert.True(t, strings.HasPrefix(resp.TargetURL, sandboxBaseURL))
 	assert.Contains(t, resp.TargetURL, "PID=NBQM")
 	assert.Contains(t, resp.TargetURL, "PRN=TEST-001")
-	assert.Contains(t, resp.TargetURL, "AMT=100")
+	assert.Contains(t, resp.TargetURL, "AMT=1.00")
 	assert.Contains(t, resp.TargetURL, "MD=P")
 	assert.Contains(t, resp.TargetURL, "CRN=NPR")
 }

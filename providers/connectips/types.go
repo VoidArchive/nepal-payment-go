@@ -1,5 +1,7 @@
 package connectips
 
+import "encoding/json"
+
 // ConnectIPS API request/response types.
 // These are internal to the provider and not exported.
 
@@ -13,14 +15,12 @@ type validationRequest struct {
 }
 
 // validationResponse is returned by the validation API.
+// merchantId (a number) and token (null) are left out: nothing reads them.
 type validationResponse struct {
-	Status      string `json:"status"`
-	StatusDesc  string `json:"statusDesc,omitempty"`
-	TransRefID  string `json:"transactionRefId,omitempty"`
-	ReferenceID string `json:"referenceId,omitempty"`
-	TxnAmount   int64  `json:"txnAmount,omitempty"`
-	TxnDate     string `json:"txnDate,omitempty"`
-	TokenValid  bool   `json:"tokenValid,omitempty"`
+	Status      string      `json:"status"`
+	StatusDesc  string      `json:"statusDesc"`
+	ReferenceID string      `json:"referenceId"`
+	TxnAmt      json.Number `json:"txnAmt"` // a string ("500") or a number (1000.00)
 }
 
 // ConnectIPS status codes.

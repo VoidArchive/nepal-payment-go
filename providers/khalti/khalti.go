@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/voidarchive/nepal-payment-go/core"
+	"github.com/voidarchive/nepal-payment-go/v2/core"
 )
 
 const (
@@ -100,6 +100,8 @@ func (p *Provider) InitiatePayment(ctx context.Context, req *core.PaymentRequest
 }
 
 // VerifyPayment validates a callback and confirms payment status.
+// Khalti's lookup does not return the order ID, so OriginalOrderID is not checked: the caller
+// must match the callback pidx to the TransactionID that InitiatePayment returned for that order.
 func (p *Provider) VerifyPayment(ctx context.Context, req *core.VerifyRequest) (*core.VerifyResponse, error) {
 	// Get pidx from callback params
 	pidx := req.EncodedParams["pidx"]
@@ -110,7 +112,8 @@ func (p *Provider) VerifyPayment(ctx context.Context, req *core.VerifyRequest) (
 	payload := lookupRequest{PIDX: pidx}
 
 	var resp lookupResponse
-	if err := p.doRequest(ctx, lookupEndpoint, payload, &resp); err != nil {
+	// Khalti answers cancelled and expired payments with HTTP 400 and the normal lookup body.
+	if err := p.doRequest(ctx, lookupEndpoint, payload, &resp); err != nil && resp.Status == "" {
 		return nil, err
 	}
 
@@ -180,6 +183,7 @@ func (p *Provider) doRequest(ctx context.Context, endpoint string, payload any, 
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		_ = json.Unmarshal(respBody, result) // some error replies carry a usable body; see VerifyPayment
 		return p.handleErrorResponse(resp.StatusCode, respBody)
 	}
 
@@ -191,23 +195,25 @@ func (p *Provider) doRequest(ctx context.Context, endpoint string, payload any, 
 }
 
 func (p *Provider) handleErrorResponse(statusCode int, body []byte) error {
-	var errResp errorResponse
-	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Detail != "" {
-		return fmt.Errorf("%w: %s", core.ErrProviderError, errResp.Detail)
-	}
-
+	var err error
 	switch statusCode {
 	case http.StatusUnauthorized:
-		return fmt.Errorf("%w: invalid secret key", core.ErrInvalidConfig)
+		err = fmt.Errorf("%w: invalid secret key", core.ErrInvalidConfig)
 	case http.StatusBadRequest:
-		return fmt.Errorf("%w: bad request", core.ErrInvalidRequest)
+		err = fmt.Errorf("%w: bad request", core.ErrInvalidRequest)
 	case http.StatusNotFound:
-		return core.ErrPaymentNotFound
+		err = core.ErrPaymentNotFound
 	case http.StatusTooManyRequests:
-		return core.ErrRateLimited
+		err = core.ErrRateLimited
 	default:
-		return fmt.Errorf("%w: HTTP %d", core.ErrProviderError, statusCode)
+		err = fmt.Errorf("%w: HTTP %d", core.ErrProviderError, statusCode)
 	}
+
+	var errResp errorResponse
+	if json.Unmarshal(body, &errResp) == nil && errResp.Detail != "" {
+		return fmt.Errorf("%w: %s", err, errResp.Detail)
+	}
+	return err
 }
 
 func (p *Provider) normalizeStatus(khaltiStatus string) (string, bool) {

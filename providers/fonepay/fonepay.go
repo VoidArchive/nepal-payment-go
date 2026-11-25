@@ -10,13 +10,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/voidarchive/nepal-payment-go/core"
+	"github.com/voidarchive/nepal-payment-go/v2/core"
 )
 
 const (
@@ -87,31 +88,26 @@ func (p *Provider) InitiatePayment(ctx context.Context, req *core.PaymentRequest
 	// Current date in format MM/DD/YYYY
 	dt := time.Now().Format("01/02/2006")
 
+	// FonePay expects rupees; req.Amount is paisa. The DV message must use the exact sent string.
+	amt := fmt.Sprintf("%.2f", float64(req.Amount)/100)
+
 	// Build payment parameters
 	params := url.Values{}
 	params.Set("PID", p.config.MerchantCode)
-	params.Set("MD", "P")                                       // Payment mode
-	params.Set("PRN", req.OrderID)                              // Product Reference Number
-	params.Set("AMT", fmt.Sprintf("%.2f", float64(req.Amount))) // Amount as decimal
-	params.Set("CRN", "NPR")                                    // Currency
-	params.Set("DT", dt)                                        // Date
-	params.Set("R1", req.Description)                           // Remarks 1
-	params.Set("R2", "N/A")                                     // Remarks 2
-	params.Set("RU", req.CallbackURL)                           // Return URL
+	params.Set("MD", "P")             // Payment mode
+	params.Set("PRN", req.OrderID)    // Product Reference Number
+	params.Set("AMT", amt)            // Amount in rupees
+	params.Set("CRN", "NPR")          // Currency
+	params.Set("DT", dt)              // Date
+	params.Set("R1", req.Description) // Remarks 1
+	params.Set("R2", "N/A")           // Remarks 2
+	params.Set("RU", req.CallbackURL) // Return URL
 
 	// Generate HMAC-SHA512 hash (DV = Data Validation)
 	// Message format: PID,MD,PRN,AMT,CRN,DT,R1,R2,RU
-	message := fmt.Sprintf("%s,%s,%s,%.2f,%s,%s,%s,%s,%s",
-		p.config.MerchantCode,
-		"P",
-		req.OrderID,
-		float64(req.Amount),
-		"NPR",
-		dt,
-		req.Description,
-		"N/A",
-		req.CallbackURL,
-	)
+	message := strings.Join([]string{
+		p.config.MerchantCode, "P", req.OrderID, amt, "NPR", dt, req.Description, "N/A", req.CallbackURL,
+	}, ",")
 	dv := p.generateHMAC(message)
 	params.Set("DV", dv)
 
@@ -127,49 +123,40 @@ func (p *Provider) InitiatePayment(ctx context.Context, req *core.PaymentRequest
 // VerifyPayment validates callback data and confirms payment status.
 // Expects EncodedParams from the callback query string.
 func (p *Provider) VerifyPayment(ctx context.Context, req *core.VerifyRequest) (*core.VerifyResponse, error) {
-	// Extract callback parameters
-	prn := req.EncodedParams["PRN"]
-	if prn == "" {
-		prn = req.OriginalOrderID
+	q := req.EncodedParams
+	prn, pid, ps, rc, uid := q["PRN"], q["PID"], q["PS"], q["RC"], q["UID"]
+	bc, ini, pAmt, rAmt, dv := q["BC"], q["INI"], q["P_AMT"], q["R_AMT"], q["DV"]
+
+	// DV signs PRN,PID,PS,RC,UID,BC,INI,P_AMT,R_AMT exactly as received.
+	message := strings.Join([]string{prn, pid, ps, rc, uid, bc, ini, pAmt, rAmt}, ",")
+	expectedDV := p.generateHMAC(message)
+	if dv == "" || !hmac.Equal([]byte(expectedDV), []byte(strings.ToLower(dv))) {
+		return nil, fmt.Errorf("%w: HMAC signature mismatch", core.ErrSignatureMismatch)
 	}
+	if pid != p.config.MerchantCode {
+		return nil, fmt.Errorf("%w: merchant code mismatch", core.ErrSignatureMismatch)
+	}
+
 	if prn == "" {
 		return nil, fmt.Errorf("%w: PRN not found in callback", core.ErrInvalidRequest)
 	}
-
-	// Get all callback params
-	bid := req.EncodedParams["BID"]
-	uid := req.EncodedParams["UID"]
-	ps := req.EncodedParams["PS"]
-	rc := req.EncodedParams["RC"]
-	dv := req.EncodedParams["DV"]
-	status := req.EncodedParams["P"]
-
-	// Verify HMAC signature
-	// Response DV format: PRN,BID,UID,PS,RC,DV is calculated from PRN,BID,UID
-	if dv != "" {
-		message := fmt.Sprintf("%s,%s,%s", prn, bid, uid)
-		expectedDV := p.generateHMAC(message)
-		if !hmac.Equal([]byte(strings.ToLower(expectedDV)), []byte(strings.ToLower(dv))) {
-			return nil, fmt.Errorf("%w: HMAC signature mismatch", core.ErrSignatureMismatch)
-		}
+	if req.OriginalOrderID != "" && req.OriginalOrderID != prn {
+		return nil, fmt.Errorf("%w: order ID mismatch: expected %s, got %s",
+			core.ErrInvalidRequest, req.OriginalOrderID, prn)
 	}
 
-	// Normalize status
-	normalizedStatus, success := p.normalizeStatus(status, rc)
-
-	// Parse amount if provided
-	var verifiedAmount int64
-	if amtStr := req.EncodedParams["AMT"]; amtStr != "" {
-		if amt, err := strconv.ParseInt(amtStr, 10, 64); err == nil {
-			verifiedAmount = amt
-		}
+	// R_AMT is the merchant-requested amount in rupees ("100.0"); convert to paisa.
+	parsedAmount, err := strconv.ParseFloat(rAmt, 64)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid R_AMT: %v", core.ErrInvalidRequest, err)
 	}
-
-	// Validate amount if expected
-	if req.ExpectedAmount > 0 && verifiedAmount > 0 && req.ExpectedAmount != verifiedAmount {
+	verifiedAmount := int64(math.Round(parsedAmount * 100))
+	if req.ExpectedAmount > 0 && req.ExpectedAmount != verifiedAmount {
 		return nil, fmt.Errorf("%w: expected %d, got %d",
 			core.ErrAmountMismatch, req.ExpectedAmount, verifiedAmount)
 	}
+
+	normalizedStatus, success := p.normalizeStatus(ps, rc)
 
 	return &core.VerifyResponse{
 		Success:        success,
@@ -179,12 +166,15 @@ func (p *Provider) VerifyPayment(ctx context.Context, req *core.VerifyRequest) (
 		Currency:       "NPR",
 		Status:         normalizedStatus,
 		ProviderResponse: map[string]string{
-			"prn": prn,
-			"bid": bid,
-			"uid": uid,
-			"ps":  ps,
-			"rc":  rc,
-			"p":   status,
+			"prn":   prn,
+			"pid":   pid,
+			"ps":    ps,
+			"rc":    rc,
+			"uid":   uid,
+			"bc":    bc,
+			"ini":   ini,
+			"p_amt": pAmt,
+			"r_amt": rAmt,
 		},
 		VerifiedAt: time.Now().Unix(),
 	}, nil
@@ -210,19 +200,13 @@ func (p *Provider) generateHMAC(message string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func (p *Provider) normalizeStatus(status string, rc string) (string, bool) {
-	// FonePay returns P=true for success
-	if strings.ToLower(status) == "true" {
+// normalizeStatus maps the signed PS flag; RC only distinguishes cancel from failure.
+func (p *Provider) normalizeStatus(ps string, rc string) (string, bool) {
+	if ps == "true" {
 		return core.StatusComplete, true
 	}
-
-	// Check response code for more detailed status
-	switch rc {
-	case "successful", "success":
-		return core.StatusComplete, true
-	case "pending":
-		return core.StatusPending, false
-	case "cancelled", "canceled":
+	switch strings.ToLower(rc) {
+	case "cancel", "cancelled", "canceled":
 		return core.StatusCancelled, false
 	default:
 		return core.StatusFailed, false

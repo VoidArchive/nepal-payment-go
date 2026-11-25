@@ -13,7 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/voidarchive/nepal-payment-go/core"
+	"github.com/voidarchive/nepal-payment-go/v2/core"
 )
 
 const testSecretKey = "8gBm/:&EnhH.1/q"
@@ -90,12 +90,13 @@ func TestInitiatePayment(t *testing.T) {
 		wantErr       error
 		wantFormPOST  bool
 		wantOrderID   string
+		wantAmount    string
 		checkFormKeys []string
 	}{
 		{
 			name: "successful initiation",
 			request: &core.PaymentRequest{
-				Amount:      100,
+				Amount:      10000,
 				Currency:    "NPR",
 				OrderID:     "ORDER-123",
 				Description: "Test Payment",
@@ -104,6 +105,7 @@ func TestInitiatePayment(t *testing.T) {
 			wantErr:      nil,
 			wantFormPOST: true,
 			wantOrderID:  "ORDER-123",
+			wantAmount:   "100",
 			checkFormKeys: []string{
 				"amount", "total_amount", "transaction_uuid",
 				"product_code", "signature", "signed_field_names",
@@ -113,13 +115,14 @@ func TestInitiatePayment(t *testing.T) {
 		{
 			name: "with success/failure URLs from config",
 			request: &core.PaymentRequest{
-				Amount:      200,
+				Amount:      20050,
 				OrderID:     "ORDER-456",
 				CallbackURL: "https://fallback.com/callback",
 			},
 			wantErr:      nil,
 			wantFormPOST: true,
 			wantOrderID:  "ORDER-456",
+			wantAmount:   "200.5",
 		},
 		{
 			name: "zero amount",
@@ -179,6 +182,11 @@ func TestInitiatePayment(t *testing.T) {
 				assert.Equal(t, tt.wantOrderID, resp.TransactionID)
 				assert.Equal(t, sandboxFormURL, resp.TargetURL)
 				assert.NotEmpty(t, resp.FormFields)
+				assert.Equal(t, tt.wantAmount, resp.FormFields["amount"])
+				assert.Equal(t, tt.wantAmount, resp.FormFields["total_amount"])
+				assert.Equal(t, provider.generateSignature(fmt.Sprintf(
+					"total_amount=%s,transaction_uuid=%s,product_code=EPAYTEST", tt.wantAmount, tt.wantOrderID)),
+					resp.FormFields["signature"])
 
 				for _, key := range tt.checkFormKeys {
 					assert.Contains(t, resp.FormFields, key, "missing form field: %s", key)
@@ -231,32 +239,30 @@ func TestSignatureGeneration(t *testing.T) {
 	}
 }
 
-func TestVerifyPayment(t *testing.T) {
-	// Helper to create valid Base64-encoded callback
-	createCallback := func(secretKey string, status string, amount float64, uuid string) string {
-		amountStr := fmt.Sprintf("%.1f", amount)
-		callback := callbackResponse{
-			TransactionCode:  "000AWEO",
-			Status:           status,
-			TotalAmount:      amountStr, // eSewa returns as string
-			TransactionUUID:  uuid,
-			ProductCode:      "EPAYTEST",
-			SignedFieldNames: "transaction_code,status,total_amount,transaction_uuid,product_code,signed_field_names",
-		}
-
-		// Generate signature using string value
-		message := fmt.Sprintf("transaction_code=%s,status=%s,total_amount=%s,transaction_uuid=%s,product_code=%s,signed_field_names=%s",
-			callback.TransactionCode, callback.Status, callback.TotalAmount,
-			callback.TransactionUUID, callback.ProductCode, callback.SignedFieldNames)
-
-		mac := hmac.New(sha256.New, []byte(secretKey))
-		mac.Write([]byte(message))
-		callback.Signature = base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-		data, _ := json.Marshal(callback)
-		return base64.StdEncoding.EncodeToString(data)
+// createCallback builds a validly signed Base64 callback; amount is rupees as eSewa sends it ("100.0", "1,000.0").
+func createCallback(secretKey, status, amount, uuid string) string {
+	callback := callbackResponse{
+		TransactionCode:  "000AWEO",
+		Status:           status,
+		TotalAmount:      amount,
+		TransactionUUID:  uuid,
+		ProductCode:      "EPAYTEST",
+		SignedFieldNames: "transaction_code,status,total_amount,transaction_uuid,product_code,signed_field_names",
 	}
 
+	message := fmt.Sprintf("transaction_code=%s,status=%s,total_amount=%s,transaction_uuid=%s,product_code=%s,signed_field_names=%s",
+		callback.TransactionCode, callback.Status, callback.TotalAmount,
+		callback.TransactionUUID, callback.ProductCode, callback.SignedFieldNames)
+
+	mac := hmac.New(sha256.New, []byte(secretKey))
+	mac.Write([]byte(message))
+	callback.Signature = base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	data, _ := json.Marshal(callback)
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+func TestVerifyPayment(t *testing.T) {
 	tests := []struct {
 		name        string
 		request     *core.VerifyRequest
@@ -270,43 +276,78 @@ func TestVerifyPayment(t *testing.T) {
 			name: "completed payment",
 			request: &core.VerifyRequest{
 				EncodedParams: map[string]string{
-					"data": createCallback(testSecretKey, "COMPLETE", 100.0, "ORDER-123"),
+					"data": createCallback(testSecretKey, "COMPLETE", "100.0", "ORDER-123"),
 				},
-				ExpectedAmount: 100,
+				ExpectedAmount:  10000,
+				OriginalOrderID: "ORDER-123",
 			},
 			wantErr:     nil,
 			wantSuccess: true,
 			wantStatus:  core.StatusComplete,
-			wantAmount:  100,
+			wantAmount:  10000,
 			wantTxnID:   "000AWEO",
+		},
+		{
+			name: "amount with thousands separator",
+			request: &core.VerifyRequest{
+				EncodedParams: map[string]string{
+					"data": createCallback(testSecretKey, "COMPLETE", "1,000.0", "ORDER-123"),
+				},
+				ExpectedAmount: 100000,
+			},
+			wantSuccess: true,
+			wantStatus:  core.StatusComplete,
+			wantAmount:  100000,
+		},
+		{
+			name: "fractional rupees round to paisa",
+			request: &core.VerifyRequest{
+				EncodedParams: map[string]string{
+					"data": createCallback(testSecretKey, "COMPLETE", "100.29", "ORDER-123"),
+				},
+			},
+			wantSuccess: true,
+			wantStatus:  core.StatusComplete,
+			wantAmount:  10029,
 		},
 		{
 			name: "pending payment",
 			request: &core.VerifyRequest{
 				EncodedParams: map[string]string{
-					"data": createCallback(testSecretKey, "PENDING", 500.0, "ORDER-456"),
+					"data": createCallback(testSecretKey, "PENDING", "500.0", "ORDER-456"),
 				},
 			},
 			wantErr:     nil,
 			wantSuccess: false,
 			wantStatus:  core.StatusPending,
-			wantAmount:  500,
+			wantAmount:  50000,
 		},
 		{
 			name: "amount mismatch",
 			request: &core.VerifyRequest{
 				EncodedParams: map[string]string{
-					"data": createCallback(testSecretKey, "COMPLETE", 200.0, "ORDER-123"),
+					"data": createCallback(testSecretKey, "COMPLETE", "200.0", "ORDER-123"),
 				},
-				ExpectedAmount: 100, // Different!
+				ExpectedAmount: 10000, // Different!
 			},
 			wantErr: core.ErrAmountMismatch,
+		},
+		{
+			name: "order ID mismatch",
+			request: &core.VerifyRequest{
+				EncodedParams: map[string]string{
+					"data": createCallback(testSecretKey, "COMPLETE", "100.0", "OTHER-ORDER"),
+				},
+				ExpectedAmount:  10000,
+				OriginalOrderID: "ORDER-123",
+			},
+			wantErr: core.ErrInvalidRequest,
 		},
 		{
 			name: "invalid signature",
 			request: &core.VerifyRequest{
 				EncodedParams: map[string]string{
-					"data": createCallback("wrong-secret", "COMPLETE", 100.0, "ORDER-123"),
+					"data": createCallback("wrong-secret", "COMPLETE", "100.0", "ORDER-123"),
 				},
 			},
 			wantErr: core.ErrSignatureMismatch,
@@ -360,6 +401,49 @@ func TestVerifyPayment(t *testing.T) {
 	}
 }
 
+func TestVerifyPaymentRejectsForgedCallback(t *testing.T) {
+	provider, err := New(Config{SecretKey: testSecretKey, ProductCode: "EPAYTEST", Sandbox: true})
+	require.NoError(t, err)
+
+	// Attacker starts a checkout and gets a valid signature over total_amount,transaction_uuid,product_code.
+	form, err := provider.InitiatePayment(context.Background(), &core.PaymentRequest{
+		Amount: 10000, OrderID: "ORDER-123", CallbackURL: "https://example.com/callback",
+	})
+	require.NoError(t, err)
+	f := form.FormFields
+
+	// ...then replays it as a callback claiming COMPLETE, keeping the form's signed_field_names.
+	data, err := json.Marshal(callbackResponse{
+		TransactionCode:  "FAKE",
+		Status:           "COMPLETE",
+		TotalAmount:      f["total_amount"],
+		TransactionUUID:  f["transaction_uuid"],
+		ProductCode:      f["product_code"],
+		SignedFieldNames: f["signed_field_names"],
+		Signature:        f["signature"],
+	})
+	require.NoError(t, err)
+
+	resp, err := provider.VerifyPayment(context.Background(), &core.VerifyRequest{
+		EncodedParams:   map[string]string{"data": base64.StdEncoding.EncodeToString(data)},
+		ExpectedAmount:  10000,
+		OriginalOrderID: "ORDER-123",
+	})
+	assert.ErrorIs(t, err, core.ErrSignatureMismatch)
+	assert.Nil(t, resp)
+}
+
+func TestVerifyPaymentRejectsOtherProductCode(t *testing.T) {
+	// Callback is validly signed with our key but for product EPAYTEST; this merchant is OTHER.
+	provider, err := New(Config{SecretKey: testSecretKey, ProductCode: "OTHER", Sandbox: true})
+	require.NoError(t, err)
+
+	_, err = provider.VerifyPayment(context.Background(), &core.VerifyRequest{
+		EncodedParams: map[string]string{"data": createCallback(testSecretKey, "COMPLETE", "100.0", "ORDER-123")},
+	})
+	assert.ErrorIs(t, err, core.ErrSignatureMismatch)
+}
+
 func TestVerifyViaStatusAPI(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -369,19 +453,22 @@ func TestVerifyViaStatusAPI(t *testing.T) {
 		wantErr        error
 		wantSuccess    bool
 		wantStatus     string
+		wantAmount     int64
+		wantQuery      map[string]string
 	}{
 		{
 			name: "completed via status API",
 			request: &core.VerifyRequest{
 				EncodedParams: map[string]string{
 					"transaction_uuid": "ORDER-123",
+					"product_code":     "ATTACKER", // must be ignored
 				},
-				ExpectedAmount: 100,
+				ExpectedAmount: 10050,
 			},
 			serverResponse: &statusResponse{
 				ProductCode:     "EPAYTEST",
 				TransactionUUID: "ORDER-123",
-				TotalAmount:     100.0,
+				TotalAmount:     100.5,
 				Status:          "COMPLETE",
 				RefID:           strPtr("0001TS9"),
 			},
@@ -389,6 +476,56 @@ func TestVerifyViaStatusAPI(t *testing.T) {
 			wantErr:      nil,
 			wantSuccess:  true,
 			wantStatus:   core.StatusComplete,
+			wantAmount:   10050,
+			wantQuery: map[string]string{
+				"product_code": "EPAYTEST", "total_amount": "100.5", "transaction_uuid": "ORDER-123",
+			},
+		},
+		{
+			name: "original order ID wins over URL param",
+			request: &core.VerifyRequest{
+				EncodedParams: map[string]string{
+					"transaction_uuid": "OTHER-ORDER",
+					"total_amount":     "1000",
+				},
+				OriginalOrderID: "ORDER-123",
+			},
+			serverResponse: &statusResponse{
+				ProductCode:     "EPAYTEST",
+				TransactionUUID: "ORDER-123",
+				TotalAmount:     1000,
+				Status:          "COMPLETE",
+			},
+			serverStatus: http.StatusOK,
+			wantSuccess:  true,
+			wantStatus:   core.StatusComplete,
+			wantAmount:   100000,
+			wantQuery:    map[string]string{"total_amount": "1000", "transaction_uuid": "ORDER-123"},
+		},
+		{
+			name: "order ID mismatch via API",
+			request: &core.VerifyRequest{
+				ExpectedAmount:  10000,
+				OriginalOrderID: "ORDER-123",
+			},
+			serverResponse: &statusResponse{
+				ProductCode:     "EPAYTEST",
+				TransactionUUID: "OTHER-ORDER",
+				TotalAmount:     100,
+				Status:          "COMPLETE",
+			},
+			serverStatus: http.StatusOK,
+			wantErr:      core.ErrInvalidRequest,
+		},
+		{
+			name: "error message reply",
+			request: &core.VerifyRequest{
+				EncodedParams:  map[string]string{"transaction_uuid": "ORDER-123"},
+				ExpectedAmount: 10000,
+			},
+			serverResponse: &statusResponse{ErrorMessage: "Invalid payload signature."},
+			serverStatus:   http.StatusOK,
+			wantErr:        core.ErrProviderError,
 		},
 		{
 			name: "not found",
@@ -410,7 +547,7 @@ func TestVerifyViaStatusAPI(t *testing.T) {
 				EncodedParams: map[string]string{
 					"transaction_uuid": "ORDER-123",
 				},
-				ExpectedAmount: 100,
+				ExpectedAmount: 10000,
 			},
 			serverResponse: &statusResponse{
 				ProductCode:     "EPAYTEST",
@@ -439,6 +576,9 @@ func TestVerifyViaStatusAPI(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assert.Equal(t, http.MethodGet, r.Method)
 				assert.Contains(t, r.URL.Path, "/api/epay/transaction/status")
+				for k, v := range tt.wantQuery {
+					assert.Equal(t, v, r.URL.Query().Get(k), "query param %s", k)
+				}
 
 				if tt.serverStatus != http.StatusOK {
 					w.WriteHeader(tt.serverStatus)
@@ -468,6 +608,7 @@ func TestVerifyViaStatusAPI(t *testing.T) {
 				require.NotNil(t, resp)
 				assert.Equal(t, tt.wantSuccess, resp.Success)
 				assert.Equal(t, tt.wantStatus, resp.Status)
+				assert.Equal(t, tt.wantAmount, resp.VerifiedAmount)
 			}
 		})
 	}
@@ -484,7 +625,7 @@ func TestStatusNormalization(t *testing.T) {
 		{"FULL_REFUND", core.StatusRefunded, false},
 		{"PARTIAL_REFUND", core.StatusRefunded, false},
 		{"CANCELED", core.StatusCancelled, false},
-		{"AMBIGUOUS", core.StatusFailed, false},
+		{"AMBIGUOUS", core.StatusPending, false},
 		{"NOT_FOUND", core.StatusFailed, false},
 		{"UNKNOWN", core.StatusFailed, false},
 	}

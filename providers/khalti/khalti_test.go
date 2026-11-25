@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/voidarchive/nepal-payment-go/core"
+	"github.com/voidarchive/nepal-payment-go/v2/core"
 )
 
 func TestNew(t *testing.T) {
@@ -407,19 +407,22 @@ func TestHTTPErrors(t *testing.T) {
 	tests := []struct {
 		name       string
 		statusCode int
+		body       string
 		wantErr    error
 	}{
-		{"rate limited", http.StatusTooManyRequests, core.ErrRateLimited},
-		{"unauthorized", http.StatusUnauthorized, core.ErrInvalidConfig},
-		{"not found", http.StatusNotFound, core.ErrPaymentNotFound},
-		{"bad request", http.StatusBadRequest, core.ErrInvalidRequest},
-		{"server error", http.StatusInternalServerError, core.ErrProviderError},
+		{"rate limited", http.StatusTooManyRequests, "", core.ErrRateLimited},
+		{"unauthorized", http.StatusUnauthorized, "", core.ErrInvalidConfig},
+		{"unauthorized with detail", http.StatusUnauthorized, `{"detail":"Invalid token.","status_code":401}`, core.ErrInvalidConfig},
+		{"not found", http.StatusNotFound, "", core.ErrPaymentNotFound},
+		{"bad request", http.StatusBadRequest, "", core.ErrInvalidRequest},
+		{"server error", http.StatusInternalServerError, "", core.ErrProviderError},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
 			}))
 			defer server.Close()
 
@@ -437,6 +440,42 @@ func TestHTTPErrors(t *testing.T) {
 
 			require.Error(t, err)
 			assert.ErrorIs(t, err, tt.wantErr)
+			if tt.body != "" {
+				assert.Contains(t, err.Error(), "Invalid token.")
+			}
+		})
+	}
+}
+
+// Khalti's lookup answers cancelled and expired payments with HTTP 400 and the normal body.
+func TestVerifyPaymentLookup400WithStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus string
+	}{
+		{"user canceled", `{"pidx":"vNTeXkSEaEXK2J4i7cQU6e","total_amount":1000,"status":"User canceled","transaction_id":null,"fee":0,"refunded":false}`, core.StatusCancelled},
+		{"expired", `{"pidx":"vNTeXkSEaEXK2J4i7cQU6e","total_amount":1000,"status":"Expired","transaction_id":null,"fee":0,"refunded":false}`, core.StatusExpired},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			provider, err := New(Config{SecretKey: "test_secret", WebsiteURL: "https://example.com", BaseURL: server.URL})
+			require.NoError(t, err)
+
+			resp, err := provider.VerifyPayment(context.Background(), &core.VerifyRequest{
+				EncodedParams:  map[string]string{"pidx": "vNTeXkSEaEXK2J4i7cQU6e"},
+				ExpectedAmount: 1000,
+			})
+			require.NoError(t, err)
+			assert.False(t, resp.Success)
+			assert.Equal(t, tt.wantStatus, resp.Status)
 		})
 	}
 }
