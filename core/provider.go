@@ -13,3 +13,9 @@ type Provider interface {
 	// Returns ErrSignatureMismatch for tampering, ErrAmountMismatch for manipulation.
 	VerifyPayment(ctx context.Context, req *VerifyRequest) (*VerifyResponse, error)
 }
+
+// StatusChecker is implemented by providers that can ask the gateway for a
+// payment's status without callback data (the customer never came back).
+type StatusChecker interface {
+	CheckStatus(ctx context.Context, req *StatusRequest) (*VerifyResponse, error)
+}

@@ -100,15 +100,30 @@ func (p *Provider) InitiatePayment(ctx context.Context, req *core.PaymentRequest
 }
 
 // VerifyPayment validates a callback and confirms payment status.
-// Khalti's lookup does not return the order ID, so OriginalOrderID is not checked: the caller
-// must match the callback pidx to the TransactionID that InitiatePayment returned for that order.
+// Khalti's lookup does not return the order ID, so OriginalOrderID is not checked: set
+// ProviderRef to the TransactionID (pidx) that InitiatePayment returned for that order.
 func (p *Provider) VerifyPayment(ctx context.Context, req *core.VerifyRequest) (*core.VerifyResponse, error) {
 	// Get pidx from callback params
 	pidx := req.EncodedParams["pidx"]
 	if pidx == "" {
 		return nil, fmt.Errorf("%w: pidx not found in callback", core.ErrInvalidRequest)
 	}
+	if req.ProviderRef != "" && req.ProviderRef != pidx {
+		return nil, fmt.Errorf("%w: pidx mismatch: expected %s, got %s", core.ErrInvalidRequest, req.ProviderRef, pidx)
+	}
+	return p.lookup(ctx, pidx, req.ExpectedAmount, req.OriginalOrderID)
+}
 
+// CheckStatus looks up a payment by its pidx (StatusRequest.ProviderRef) without callback data.
+func (p *Provider) CheckStatus(ctx context.Context, req *core.StatusRequest) (*core.VerifyResponse, error) {
+	if req.ProviderRef == "" {
+		return nil, fmt.Errorf("%w: ProviderRef (pidx) is required", core.ErrInvalidRequest)
+	}
+	return p.lookup(ctx, req.ProviderRef, req.Amount, req.OrderID)
+}
+
+// lookup asks Khalti for the payment's status. expectedAmount 0 skips the amount check.
+func (p *Provider) lookup(ctx context.Context, pidx string, expectedAmount int64, orderID string) (*core.VerifyResponse, error) {
 	payload := lookupRequest{PIDX: pidx}
 
 	var resp lookupResponse
@@ -121,14 +136,14 @@ func (p *Provider) VerifyPayment(ctx context.Context, req *core.VerifyRequest) (
 	status, success := p.normalizeStatus(resp.Status)
 
 	// Validate amount if expected amount is provided
-	if req.ExpectedAmount > 0 && req.ExpectedAmount != resp.TotalAmount {
-		return nil, fmt.Errorf("%w: expected %d, got %d", core.ErrAmountMismatch, req.ExpectedAmount, resp.TotalAmount)
+	if expectedAmount > 0 && expectedAmount != resp.TotalAmount {
+		return nil, fmt.Errorf("%w: expected %d, got %d", core.ErrAmountMismatch, expectedAmount, resp.TotalAmount)
 	}
 
 	return &core.VerifyResponse{
 		Success:        success,
 		TransactionID:  resp.TransactionID,
-		OrderID:        req.OriginalOrderID,
+		OrderID:        orderID,
 		VerifiedAmount: resp.TotalAmount,
 		Currency:       "NPR", // Khalti only supports NPR
 		Status:         status,
@@ -234,4 +249,7 @@ func (p *Provider) normalizeStatus(khaltiStatus string) (string, bool) {
 }
 
 // Ensure Provider implements core.Provider
-var _ core.Provider = (*Provider)(nil)
+var (
+	_ core.Provider      = (*Provider)(nil)
+	_ core.StatusChecker = (*Provider)(nil)
+)

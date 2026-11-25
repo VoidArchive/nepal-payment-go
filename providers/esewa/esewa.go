@@ -279,6 +279,14 @@ func (p *Provider) verifyViaStatusAPI(ctx context.Context, req *core.VerifyReque
 	}, nil
 }
 
+// CheckStatus asks eSewa's status API for a payment without callback data.
+func (p *Provider) CheckStatus(ctx context.Context, req *core.StatusRequest) (*core.VerifyResponse, error) {
+	if req.OrderID == "" || req.Amount <= 0 {
+		return nil, fmt.Errorf("%w: OrderID and Amount are required", core.ErrInvalidRequest)
+	}
+	return p.verifyViaStatusAPI(ctx, &core.VerifyRequest{OriginalOrderID: req.OrderID, ExpectedAmount: req.Amount})
+}
+
 func (p *Provider) validateRequest(req *core.PaymentRequest) error {
 	if req.Amount <= 0 {
 		return fmt.Errorf("%w: amount must be positive", core.ErrInvalidRequest)
@@ -337,4 +345,7 @@ func (p *Provider) normalizeStatus(esewaStatus string) (string, bool) {
 }
 
 // Ensure Provider implements core.Provider
-var _ core.Provider = (*Provider)(nil)
+var (
+	_ core.Provider      = (*Provider)(nil)
+	_ core.StatusChecker = (*Provider)(nil)
+)

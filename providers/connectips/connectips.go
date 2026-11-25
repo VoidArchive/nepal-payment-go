@@ -167,6 +167,14 @@ func (p *Provider) VerifyPayment(ctx context.Context, req *core.VerifyRequest) (
 	return p.validateTransaction(ctx, txnID, req.ExpectedAmount)
 }
 
+// CheckStatus asks the connectIPS validation API for a payment without callback data.
+func (p *Provider) CheckStatus(ctx context.Context, req *core.StatusRequest) (*core.VerifyResponse, error) {
+	if req.OrderID == "" || req.Amount <= 0 {
+		return nil, fmt.Errorf("%w: OrderID and Amount are required", core.ErrInvalidRequest)
+	}
+	return p.validateTransaction(ctx, req.OrderID, req.Amount)
+}
+
 func (p *Provider) validateTransaction(ctx context.Context, txnID string, expectedAmount int64) (*core.VerifyResponse, error) {
 	// Generate validation token
 	token, err := p.generateValidationToken(txnID, expectedAmount)
@@ -367,4 +375,7 @@ func parseDERKey(data []byte) (*rsa.PrivateKey, error) {
 }
 
 // Ensure Provider implements core.Provider
-var _ core.Provider = (*Provider)(nil)
+var (
+	_ core.Provider      = (*Provider)(nil)
+	_ core.StatusChecker = (*Provider)(nil)
+)

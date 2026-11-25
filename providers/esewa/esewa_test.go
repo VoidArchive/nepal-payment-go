@@ -648,3 +648,73 @@ func TestStatusNormalization(t *testing.T) {
 func strPtr(s string) *string {
 	return &s
 }
+
+func TestCheckStatus(t *testing.T) {
+	tests := []struct {
+		name        string
+		request     *core.StatusRequest
+		reply       *statusResponse
+		wantErr     error
+		wantStatus  string
+		wantSuccess bool
+	}{
+		{
+			name:        "paid",
+			request:     &core.StatusRequest{OrderID: "ORDER-123", Amount: 10050},
+			reply:       &statusResponse{ProductCode: "EPAYTEST", TransactionUUID: "ORDER-123", TotalAmount: 100.5, Status: "COMPLETE", RefID: strPtr("0001TS9")},
+			wantStatus:  core.StatusComplete,
+			wantSuccess: true,
+		},
+		{
+			name:       "pending",
+			request:    &core.StatusRequest{OrderID: "ORDER-123", Amount: 10050},
+			reply:      &statusResponse{ProductCode: "EPAYTEST", TransactionUUID: "ORDER-123", TotalAmount: 100.5, Status: "PENDING"},
+			wantStatus: core.StatusPending,
+		},
+		{
+			name:    "not found",
+			request: &core.StatusRequest{OrderID: "ORDER-123", Amount: 10050},
+			reply:   &statusResponse{Status: "NOT_FOUND"},
+			wantErr: core.ErrPaymentNotFound,
+		},
+		{
+			name:    "amount mismatch",
+			request: &core.StatusRequest{OrderID: "ORDER-123", Amount: 10050},
+			reply:   &statusResponse{ProductCode: "EPAYTEST", TransactionUUID: "ORDER-123", TotalAmount: 200, Status: "COMPLETE"},
+			wantErr: core.ErrAmountMismatch,
+		},
+		{
+			name:    "order ID mismatch",
+			request: &core.StatusRequest{OrderID: "ORDER-123", Amount: 10050},
+			reply:   &statusResponse{ProductCode: "EPAYTEST", TransactionUUID: "OTHER", TotalAmount: 100.5, Status: "COMPLETE"},
+			wantErr: core.ErrInvalidRequest,
+		},
+		{name: "missing order ID", request: &core.StatusRequest{Amount: 10050}, wantErr: core.ErrInvalidRequest},
+		{name: "missing amount", request: &core.StatusRequest{OrderID: "ORDER-123"}, wantErr: core.ErrInvalidRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "ORDER-123", r.URL.Query().Get("transaction_uuid"))
+				assert.Equal(t, "100.5", r.URL.Query().Get("total_amount"))
+				_ = json.NewEncoder(w).Encode(tt.reply) //nolint:errcheck
+			}))
+			defer server.Close()
+
+			provider, err := New(Config{SecretKey: testSecretKey, ProductCode: "EPAYTEST", Sandbox: true})
+			require.NoError(t, err)
+			provider.statusURL = server.URL + "/"
+
+			resp, err := provider.CheckStatus(context.Background(), tt.request)
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantStatus, resp.Status)
+			assert.Equal(t, tt.wantSuccess, resp.Success)
+			assert.Equal(t, int64(10050), resp.VerifiedAmount)
+		})
+	}
+}
