@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/voidarchive/nepal-payment-go/core"
-	"github.com/voidarchive/nepal-payment-go/providers/connectips"
-	"github.com/voidarchive/nepal-payment-go/providers/esewa"
-	"github.com/voidarchive/nepal-payment-go/providers/fonepay"
-	"github.com/voidarchive/nepal-payment-go/providers/khalti"
+	"github.com/voidarchive/nepal-payment-go/v2/core"
+	"github.com/voidarchive/nepal-payment-go/v2/providers/connectips"
+	"github.com/voidarchive/nepal-payment-go/v2/providers/esewa"
+	"github.com/voidarchive/nepal-payment-go/v2/providers/fonepay"
+	"github.com/voidarchive/nepal-payment-go/v2/providers/khalti"
 )
 
 var (

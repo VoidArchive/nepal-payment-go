@@ -1,4 +1,4 @@
-module github.com/voidarchive/nepal-payment-go
+module github.com/voidarchive/nepal-payment-go/v2
 
 go 1.26
 

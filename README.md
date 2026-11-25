@@ -1,41 +1,40 @@
 # Nepal Payment Go
 
-A unified payment SDK for Nepal supporting multiple payment providers with a consistent API.
+A Go SDK for taking payments in Nepal. eSewa, Khalti, ConnectIPS and FonePay sit behind one interface.
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/voidarchive/nepal-payment-go.svg)](https://pkg.go.dev/github.com/voidarchive/nepal-payment-go)
+[![Go Reference](https://pkg.go.dev/badge/github.com/voidarchive/nepal-payment-go/v2.svg)](https://pkg.go.dev/github.com/voidarchive/nepal-payment-go/v2)
 [![CI](https://github.com/voidarchive/nepal-payment-go/actions/workflows/ci.yml/badge.svg)](https://github.com/voidarchive/nepal-payment-go/actions/workflows/ci.yml)
 
 ## Features
 
-- **Unified API** - Same interface for all providers
-- **Type-safe** - Strongly typed requests and responses
-- **Production-ready** - Proper error handling, timeouts, and logging
-- **Well-tested** - Comprehensive test coverage
-- **Zero dependencies** - Uses only the Go standard library
+- One `Provider` interface: `InitiatePayment` and `VerifyPayment` work the same way for every gateway.
+- `VerifyPayment` checks the gateway's signature, the amount and the order ID before it reports success.
+- Failures wrap sentinel errors, so `errors.Is` can tell a tampered amount from a timeout.
+- The library imports only the Go standard library. `testify` is used in tests.
 
-## Supported Providers
+## Supported providers
 
-| Provider | Flow Type | Authentication | Status |
-|----------|-----------|----------------|--------|
-| [eSewa](https://esewa.com.np) | Form POST | HMAC-SHA256 | ✅ Ready |
-| [Khalti](https://khalti.com) | Redirect | API Key | ✅ Ready |
-| [ConnectIPS](https://connectips.com) | Form POST | RSA-SHA256 Certificate | ✅ Ready |
-| [FonePay](https://fonepay.com) | Redirect | HMAC-SHA512 | ✅ Ready |
+| Provider | Flow type | Authentication |
+|----------|-----------|----------------|
+| [eSewa](https://esewa.com.np) | Form POST | HMAC-SHA256 |
+| [Khalti](https://khalti.com) | Redirect | API Key |
+| [ConnectIPS](https://connectips.com) | Form POST | RSA-SHA256 Certificate |
+| [FonePay](https://fonepay.com) | Redirect | HMAC-SHA512 |
 
 ## Installation
 
 ```bash
-go get github.com/voidarchive/nepal-payment-go
+go get github.com/voidarchive/nepal-payment-go/v2
 ```
 
-## Quick Start
+## Quick start
 
-`Amount` is always in paisa (1/100 rupee) for every provider: Rs 100 = `10000`. This changed for eSewa and FonePay, which used to take rupees.
+`Amount` is in paisa (1/100 rupee) for every provider, so Rs 100 is `10000`.
 
-### eSewa (Wallet)
+### eSewa (wallet)
 
 ```go
-import "github.com/voidarchive/nepal-payment-go/providers/esewa"
+import "github.com/voidarchive/nepal-payment-go/v2/providers/esewa"
 
 provider, _ := esewa.New(esewa.Config{
     SecretKey:   "8gBm/:&EnhH.1/q",  // Sandbox key
@@ -54,10 +53,10 @@ resp, _ := provider.InitiatePayment(ctx, &core.PaymentRequest{
 // Generate HTML form with resp.FormFields, POST to resp.TargetURL
 ```
 
-### Khalti (Wallet)
+### Khalti (wallet)
 
 ```go
-import "github.com/voidarchive/nepal-payment-go/providers/khalti"
+import "github.com/voidarchive/nepal-payment-go/v2/providers/khalti"
 
 provider, _ := khalti.New(khalti.Config{
     SecretKey:  os.Getenv("KHALTI_SECRET_KEY"),
@@ -75,10 +74,10 @@ resp, _ := provider.InitiatePayment(ctx, &core.PaymentRequest{
 // Redirect user to resp.TargetURL
 ```
 
-### ConnectIPS (Bank Transfer)
+### ConnectIPS (bank transfer)
 
 ```go
-import "github.com/voidarchive/nepal-payment-go/providers/connectips"
+import "github.com/voidarchive/nepal-payment-go/v2/providers/connectips"
 
 provider, _ := connectips.New(connectips.Config{
     MerchantID:  os.Getenv("CONNECTIPS_MERCHANT_ID"),
@@ -98,10 +97,10 @@ resp, _ := provider.InitiatePayment(ctx, &core.PaymentRequest{
 // Generate HTML form with resp.FormFields, POST to resp.TargetURL
 ```
 
-### FonePay (Bank/Wallet)
+### FonePay (bank or wallet)
 
 ```go
-import "github.com/voidarchive/nepal-payment-go/providers/fonepay"
+import "github.com/voidarchive/nepal-payment-go/v2/providers/fonepay"
 
 provider, _ := fonepay.New(fonepay.Config{
     MerchantCode: "NBQM",  // Sandbox
@@ -119,9 +118,9 @@ resp, _ := provider.InitiatePayment(ctx, &core.PaymentRequest{
 // Redirect user to resp.TargetURL
 ```
 
-### FonePay Dynamic QR (In-Person Payments)
+### FonePay dynamic QR (in-person payments)
 
-Generate QR codes for retail/in-person payments. Requires additional credentials from your bank.
+`GenerateQR` returns a QR code image for a customer to scan at the counter. It needs a separate API username and password, which your bank issues.
 
 ```go
 provider, _ := fonepay.New(fonepay.Config{
@@ -144,10 +143,19 @@ qr, _ := provider.GenerateQR(ctx, &fonepay.QRRequest{
 // Save to file: os.WriteFile("payment.png", qr.QRImageData, 0644)
 ```
 
+## Upgrading from v1
 
-## Payment Verification
+v2 changes the import path and a few behaviours:
 
-All providers use the same verification pattern:
+- The module path ends in `/v2`.
+- `Amount`, `ExpectedAmount` and `VerifiedAmount` are paisa for every provider. In v1, eSewa and FonePay took rupees, so multiply those amounts by 100.
+- ConnectIPS takes a PEM key only. `CertPassword` and `CertFormat` are gone, and `VerifyPayment` needs `ExpectedAmount`.
+- A callback for a different order than `OriginalOrderID` is rejected (eSewa, FonePay, ConnectIPS).
+- The unused refund types, `ProviderInfo` and a few unused errors and fields were removed from `core`.
+
+## Payment verification
+
+Verification is the same call for every provider:
 
 ```go
 result, err := provider.VerifyPayment(ctx, &core.VerifyRequest{
@@ -170,11 +178,11 @@ if result.Success {
 }
 ```
 
-Khalti does not check `OriginalOrderID`: match the callback `pidx` to the `TransactionID` returned by `InitiatePayment` yourself before verifying. ConnectIPS requires `ExpectedAmount` (it returns an error when it is 0).
+Two providers differ. Khalti's lookup does not return your order ID, so `OriginalOrderID` is not checked there: before you verify, match the callback `pidx` to the `TransactionID` that `InitiatePayment` returned for that order. ConnectIPS needs `ExpectedAmount` and returns an error when it is 0.
 
-## Running the Demo
+## Running the demo
 
-### Combined Demo (All Providers)
+The demo serves one checkout page for all four providers.
 
 ```bash
 go run ./examples/demo/
@@ -182,7 +190,7 @@ go run ./examples/demo/
 
 Open http://localhost:8080
 
-## Sandbox Credentials
+## Sandbox credentials
 
 ### eSewa
 
@@ -205,10 +213,9 @@ Open http://localhost:8080
 
 ### ConnectIPS
 
-Requires merchant onboarding with [Nepal Clearing House (NCHL)](https://nchl.com.np).
-You'll receive: Merchant ID, App ID, and a `.pfx` certificate.
+You onboard as a merchant with [Nepal Clearing House (NCHL)](https://nchl.com.np), which sends you a Merchant ID, an App ID, an app password and a `.pfx` certificate.
 
-The SDK reads a PEM private key, not the `.pfx`. Convert it once with OpenSSL (it asks for the PFX password):
+The SDK reads a PEM private key, so convert the `.pfx` once with OpenSSL. The command asks for the PFX password:
 
 ```bash
 openssl pkcs12 -in CREDITOR.pfx -nocerts -nodes -out creditor.pem
@@ -225,9 +232,11 @@ Then point `CertPath` (or `CONNECTIPS_CERT_PATH`) at `creditor.pem`. The PEM has
 | Merchant Code | `NBQM` |
 | Secret Key | `a7e3512f5032480a83137793cb2021dc` |
 
-Note: FonePay sandbox may be unreliable. Contact FonePay for production credentials.
+The FonePay sandbox is sometimes down. Production credentials come from FonePay.
 
-## Environment Variables
+## Environment variables
+
+The demo reads these. `.env.example` has the same list.
 
 ```bash
 # eSewa (optional - has sandbox defaults)
@@ -248,7 +257,7 @@ FONEPAY_MERCHANT_CODE=NBQM
 FONEPAY_SECRET_KEY=a7e3512f5032480a83137793cb2021dc
 ```
 
-## Project Structure
+## Project structure
 
 ```
 .
@@ -266,7 +275,7 @@ FONEPAY_SECRET_KEY=a7e3512f5032480a83137793cb2021dc
     └── demo/               # Combined demo (all providers)
 ```
 
-## Core Types
+## Core types
 
 ```go
 // PaymentRequest initiates a payment
@@ -308,10 +317,10 @@ type VerifyResponse struct {
 }
 ```
 
-## Error Handling
+## Error handling
 
 ```go
-import "github.com/voidarchive/nepal-payment-go/core"
+import "github.com/voidarchive/nepal-payment-go/v2/core"
 
 // Sentinel errors
 core.ErrInvalidConfig    // Invalid provider configuration
@@ -348,18 +357,18 @@ go test ./providers/fonepay/... -v
 golangci-lint run ./...
 ```
 
-## Security Notes
+## Security notes
 
-1. **Never expose secret keys** in client-side code
-2. **Always verify payments** server-side before fulfilling orders
-3. **Validate amounts** to prevent price manipulation
-4. **Use HTTPS** in production for callback URLs
-5. **Store the ConnectIPS private key securely** (`creditor.pem` has no password: keep it out of git, `chmod 600`)
+- Keep secret keys on the server. Anything sent to the browser can be read by the shopper.
+- Call `VerifyPayment` on the server before you fulfil an order. A redirect to your success URL proves nothing, because the shopper controls it.
+- Pass `ExpectedAmount` and `OriginalOrderID` from your own order record. Without them, a real payment for a cheaper order can be replayed against an expensive one.
+- Use HTTPS callback URLs in production.
+- `creditor.pem` has no password. Keep it out of git and run `chmod 600` on it.
 
 ## Contributing
 
-Contributions are welcome! Feel free to submit a Pull Request.
+Pull requests are welcome. Run `go test ./...` and `golangci-lint run ./...` before you open one.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT. See [LICENSE](LICENSE).

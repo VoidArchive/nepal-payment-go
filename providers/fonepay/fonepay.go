@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/voidarchive/nepal-payment-go/core"
+	"github.com/voidarchive/nepal-payment-go/v2/core"
 )
 
 const (

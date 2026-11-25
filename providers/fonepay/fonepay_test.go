@@ -11,7 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/voidarchive/nepal-payment-go/core"
+	"github.com/voidarchive/nepal-payment-go/v2/core"
 )
 
 const testSecretKey = "a7e3512f5032480a83137793cb2021dc"

@@ -17,7 +17,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/voidarchive/nepal-payment-go/core"
+	"github.com/voidarchive/nepal-payment-go/v2/core"
 )
 
 // generateTestKey creates an RSA key pair for testing.
