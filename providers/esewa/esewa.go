@@ -325,14 +325,12 @@ func (p *Provider) normalizeStatus(esewaStatus string) (string, bool) {
 	switch esewaStatus {
 	case "COMPLETE":
 		return core.StatusComplete, true
-	case "PENDING":
+	case "PENDING", "AMBIGUOUS": // AMBIGUOUS is eSewa's "not final yet": check again later
 		return core.StatusPending, false
 	case "FULL_REFUND", "PARTIAL_REFUND":
 		return core.StatusRefunded, false
 	case "CANCELED":
 		return core.StatusCancelled, false
-	case "AMBIGUOUS", "NOT_FOUND":
-		return core.StatusFailed, false
 	default:
 		return core.StatusFailed, false
 	}

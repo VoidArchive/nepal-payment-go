@@ -625,7 +625,7 @@ func TestStatusNormalization(t *testing.T) {
 		{"FULL_REFUND", core.StatusRefunded, false},
 		{"PARTIAL_REFUND", core.StatusRefunded, false},
 		{"CANCELED", core.StatusCancelled, false},
-		{"AMBIGUOUS", core.StatusFailed, false},
+		{"AMBIGUOUS", core.StatusPending, false},
 		{"NOT_FOUND", core.StatusFailed, false},
 		{"UNKNOWN", core.StatusFailed, false},
 	}
