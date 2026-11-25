@@ -182,6 +182,7 @@ if err != nil {
     if errors.Is(err, core.ErrSignatureMismatch) {
         // Handle signature failure
     }
+    return
 }
 
 if result.Success {
@@ -191,7 +192,7 @@ if result.Success {
 
 Two providers have special rules:
 
-- Khalti does not send your order ID. Thus, the SDK cannot compare it with `OriginalOrderID`. Keep the `TransactionID` from `InitiatePayment` (the Khalti `pidx`) with your order. Set `ProviderRef` to that value when you call `VerifyPayment`. The SDK rejects a callback that has a different `pidx`.
+- Khalti sends your order ID in the redirect, but the redirect has no signature, and the lookup reply does not contain the order ID. Thus, the SDK cannot compare it with `OriginalOrderID`. Keep the `TransactionID` from `InitiatePayment` (the Khalti `pidx`) with your order. Set `ProviderRef` to that value when you call `VerifyPayment`. The SDK rejects a callback that has a different `pidx`.
 - ConnectIPS must have `ExpectedAmount`. If `ExpectedAmount` is 0, `VerifyPayment` gives an error.
 
 ## Payment records
