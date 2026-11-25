@@ -10,6 +10,7 @@ This Go SDK lets your application receive payments in Nepal. It supports eSewa, 
 - There is one `Provider` interface. `InitiatePayment` and `VerifyPayment` operate the same for each provider.
 - `VerifyPayment` examines the signature, the amount and the order ID. Then it reports the result.
 - Each error wraps a sentinel error. Use `errors.Is` to find the cause of an error.
+- The `payments` package keeps payment records and finds payments that the customer did not complete in the browser.
 - The library imports only the Go standard library. Only the tests use `testify`.
 
 ## Supported providers
@@ -190,8 +191,69 @@ if result.Success {
 
 Two providers have special rules:
 
-- Khalti does not send your order ID. Thus, the SDK cannot compare it with `OriginalOrderID`. Before you call `VerifyPayment`, compare the callback `pidx` with the `TransactionID` from `InitiatePayment` for that order. Continue only if they are the same.
+- Khalti does not send your order ID. Thus, the SDK cannot compare it with `OriginalOrderID`. Keep the `TransactionID` from `InitiatePayment` (the Khalti `pidx`) with your order. Set `ProviderRef` to that value when you call `VerifyPayment`. The SDK rejects a callback that has a different `pidx`.
 - ConnectIPS must have `ExpectedAmount`. If `ExpectedAmount` is 0, `VerifyPayment` gives an error.
+
+## Payment records
+
+The `payments` package keeps a record of each payment. It applies all the checks for you. Use it if you do not want to write this logic yourself.
+
+```go
+import (
+    "github.com/voidarchive/nepal-payment-go/v2/core"
+    "github.com/voidarchive/nepal-payment-go/v2/payments"
+)
+
+svc := &payments.Service{
+    Store:     payments.NewMemoryStore(), // development only; use a database store in production
+    Providers: map[string]core.Provider{"esewa": esewaProvider, "khalti": khaltiProvider},
+    CallbackURL: func(id string) string {
+        return "https://yoursite.com/payments/" + id + "/callback"
+    },
+}
+
+// 1. Create the payment. Send the customer to p.Checkout.
+p, err := svc.Create(ctx, payments.CreateParams{
+    OrderID:  "ORDER-123",
+    Provider: "esewa",
+    Amount:   10000, // In paisa (NPR 100)
+})
+
+// 2. In your callback handler, give the query parameters to the service.
+p, changed, err := svc.HandleCallback(ctx, id, callbackParams)
+if changed && p.Status == payments.StatusPaid {
+    // Complete the order. This block runs one time for each payment.
+}
+
+// 3. On a timer (for example, each minute), examine the payments that are not final.
+changedPayments, err := svc.CheckDue(ctx)
+```
+
+The service obeys these rules:
+
+- A payment has one of these statuses: `pending`, `paid`, `failed`, `expired`, `refunded`.
+- If you call `Create` again with the same order ID, provider and amount, you get the same payment. A different amount gives `ErrAmountConflict`.
+- If the order is paid, `Create` always gives the paid payment.
+- `HandleCallback` always compares the amount, the payment ID and the provider reference. You cannot skip these checks.
+- `changed` is true one time for each status change. This is true also when a callback and a status check occur at the same time.
+- `CheckDue` asks the provider for the status of each pending payment. Thus, it finds a payment when the customer closes the browser before the redirect. The time between checks increases from 1 minute to 1 hour.
+- A pending payment expires after 24 hours. FonePay cannot give the status without the redirect. Thus, a pending FonePay payment expires after 30 minutes.
+
+Limits:
+
+- `NewMemoryStore` loses all payments when the program stops. For production, write a `Store` for your database. The `payments/storetest` package contains tests that each `Store` must pass.
+- A customer can start a payment with one provider and then pay with a different provider for the same order. If the customer pays the two payments, the two payments become `paid`. You must refund one of them.
+
+### Mock provider
+
+The `providers/mock` package is a provider for development. It does not need a merchant account. Its payment page has three buttons: "Pay", "Fail", and "Pay, then close the tab". Do not use it in production.
+
+```go
+import "github.com/voidarchive/nepal-payment-go/v2/providers/mock"
+
+mockProvider, _ := mock.New(mock.Config{BaseURL: "http://localhost:8080/mockpay"})
+http.Handle("/mockpay/", http.StripPrefix("/mockpay", mockProvider.Handler()))
+```
 
 ## How to run the demo
 
@@ -291,7 +353,9 @@ FONEPAY_SECRET_KEY=a7e3512f5032480a83137793cb2021dc
 │   ├── esewa/              # eSewa implementation
 │   ├── khalti/             # Khalti implementation
 │   ├── connectips/         # ConnectIPS implementation
-│   └── fonepay/            # FonePay implementation
+│   ├── fonepay/            # FonePay implementation
+│   └── mock/               # Fake provider for development
+├── payments/               # Payment records, status checks, Store interface
 └── examples/
     └── demo/               # Combined demo (all providers)
 ```
