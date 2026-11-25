@@ -1,16 +1,16 @@
 # Nepal Payment Go
 
-A Go SDK for taking payments in Nepal. eSewa, Khalti, ConnectIPS and FonePay sit behind one interface.
+This Go SDK lets your application receive payments in Nepal. It supports eSewa, Khalti, ConnectIPS and FonePay. All four providers use the same interface.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/voidarchive/nepal-payment-go/v2.svg)](https://pkg.go.dev/github.com/voidarchive/nepal-payment-go/v2)
 [![CI](https://github.com/voidarchive/nepal-payment-go/actions/workflows/ci.yml/badge.svg)](https://github.com/voidarchive/nepal-payment-go/actions/workflows/ci.yml)
 
 ## Features
 
-- One `Provider` interface: `InitiatePayment` and `VerifyPayment` work the same way for every gateway.
-- `VerifyPayment` checks the gateway's signature, the amount and the order ID before it reports success.
-- Failures wrap sentinel errors, so `errors.Is` can tell a tampered amount from a timeout.
-- The library imports only the Go standard library. `testify` is used in tests.
+- There is one `Provider` interface. `InitiatePayment` and `VerifyPayment` operate the same for each provider.
+- `VerifyPayment` examines the signature, the amount and the order ID. Then it reports the result.
+- Each error wraps a sentinel error. Use `errors.Is` to find the cause of an error.
+- The library imports only the Go standard library. Only the tests use `testify`.
 
 ## Supported providers
 
@@ -29,7 +29,7 @@ go get github.com/voidarchive/nepal-payment-go/v2
 
 ## Quick start
 
-`Amount` is in paisa (1/100 rupee) for every provider, so Rs 100 is `10000`.
+`Amount` is in paisa for each provider. One rupee is 100 paisa. Thus, Rs 100 is `10000`.
 
 ### eSewa (wallet)
 
@@ -120,7 +120,7 @@ resp, _ := provider.InitiatePayment(ctx, &core.PaymentRequest{
 
 ### FonePay dynamic QR (in-person payments)
 
-`GenerateQR` returns a QR code image for a customer to scan at the counter. It needs a separate API username and password, which your bank issues.
+`GenerateQR` makes a QR code image. The customer scans the image to pay. `GenerateQR` needs an API username and an API password. Get them from your bank.
 
 ```go
 provider, _ := fonepay.New(fonepay.Config{
@@ -143,19 +143,20 @@ qr, _ := provider.GenerateQR(ctx, &fonepay.QRRequest{
 // Save to file: os.WriteFile("payment.png", qr.QRImageData, 0644)
 ```
 
-## Upgrading from v1
+## How to upgrade from v1
 
-v2 changes the import path and a few behaviours:
+Version 2 has these changes:
 
-- The module path ends in `/v2`.
-- `Amount`, `ExpectedAmount` and `VerifiedAmount` are paisa for every provider. In v1, eSewa and FonePay took rupees, so multiply those amounts by 100.
-- ConnectIPS takes a PEM key only. `CertPassword` and `CertFormat` are gone, and `VerifyPayment` needs `ExpectedAmount`.
-- A callback for a different order than `OriginalOrderID` is rejected (eSewa, FonePay, ConnectIPS).
-- The unused refund types, `ProviderInfo` and a few unused errors and fields were removed from `core`.
+- The module path has `/v2` at the end. Change your imports.
+- `Amount`, `ExpectedAmount` and `VerifiedAmount` are in paisa for each provider. Version 1 used rupees for eSewa and FonePay. Multiply those amounts by 100.
+- ConnectIPS accepts only a PEM key. Remove `CertPassword` and `CertFormat` from your configuration.
+- ConnectIPS `VerifyPayment` must have `ExpectedAmount`.
+- eSewa, FonePay and ConnectIPS reject a callback if its order ID is different from `OriginalOrderID`.
+- `core` does not contain the refund types, `ProviderInfo`, and some errors and fields that had no use.
 
 ## Payment verification
 
-Verification is the same call for every provider:
+Use the same call to verify a payment for each provider:
 
 ```go
 result, err := provider.VerifyPayment(ctx, &core.VerifyRequest{
@@ -178,17 +179,22 @@ if result.Success {
 }
 ```
 
-Two providers differ. Khalti's lookup does not return your order ID, so `OriginalOrderID` is not checked there: before you verify, match the callback `pidx` to the `TransactionID` that `InitiatePayment` returned for that order. ConnectIPS needs `ExpectedAmount` and returns an error when it is 0.
+Two providers have special rules:
 
-## Running the demo
+- Khalti does not send your order ID. Thus, the SDK cannot compare it with `OriginalOrderID`. Before you call `VerifyPayment`, compare the callback `pidx` with the `TransactionID` from `InitiatePayment` for that order. Continue only if they are the same.
+- ConnectIPS must have `ExpectedAmount`. If `ExpectedAmount` is 0, `VerifyPayment` gives an error.
 
-The demo serves one checkout page for all four providers.
+## How to run the demo
 
-```bash
-go run ./examples/demo/
-```
+The demo shows one checkout page for all four providers.
 
-Open http://localhost:8080
+1. Start the demo:
+
+   ```bash
+   go run ./examples/demo/
+   ```
+
+2. Open http://localhost:8080 in a browser.
 
 ## Sandbox credentials
 
@@ -213,17 +219,21 @@ Open http://localhost:8080
 
 ### ConnectIPS
 
-You onboard as a merchant with [Nepal Clearing House (NCHL)](https://nchl.com.np), which sends you a Merchant ID, an App ID, an app password and a `.pfx` certificate.
+Register as a merchant with [Nepal Clearing House (NCHL)](https://nchl.com.np). NCHL gives you a Merchant ID, an App ID, an app password and a `.pfx` certificate file.
 
-The SDK reads a PEM private key, so convert the `.pfx` once with OpenSSL. The command asks for the PFX password:
+The SDK cannot read a `.pfx` file. It reads a PEM private key. Do this procedure one time:
 
-```bash
-openssl pkcs12 -in CREDITOR.pfx -nocerts -nodes -out creditor.pem
-```
+1. Convert the `.pfx` file with OpenSSL. Type the PFX password when OpenSSL asks for it.
 
-If OpenSSL 3 fails with an unsupported-algorithm error (older PFX files use RC2 encryption), add `-legacy`.
+   ```bash
+   openssl pkcs12 -in CREDITOR.pfx -nocerts -nodes -out creditor.pem
+   ```
 
-Then point `CertPath` (or `CONNECTIPS_CERT_PATH`) at `creditor.pem`. The PEM has no password, so keep it out of git and lock it down with `chmod 600 creditor.pem`.
+   If OpenSSL 3 shows an error about an algorithm that it does not support, add `-legacy` to the command. Old PFX files use RC2 encryption.
+
+2. Set `CertPath` (or `CONNECTIPS_CERT_PATH`) to the path of `creditor.pem`.
+3. Run `chmod 600 creditor.pem`. The PEM file has no password.
+4. Do not add `creditor.pem` to git.
 
 ### FonePay
 
@@ -232,11 +242,11 @@ Then point `CertPath` (or `CONNECTIPS_CERT_PATH`) at `creditor.pem`. The PEM has
 | Merchant Code | `NBQM` |
 | Secret Key | `a7e3512f5032480a83137793cb2021dc` |
 
-The FonePay sandbox is sometimes down. Production credentials come from FonePay.
+The FonePay sandbox is not always available. Get production credentials from FonePay.
 
 ## Environment variables
 
-The demo reads these. `.env.example` has the same list.
+The demo reads these variables. The file `.env.example` contains the same list.
 
 ```bash
 # eSewa (optional - has sandbox defaults)
@@ -317,7 +327,7 @@ type VerifyResponse struct {
 }
 ```
 
-## Error handling
+## Errors
 
 ```go
 import "github.com/voidarchive/nepal-payment-go/v2/core"
@@ -341,7 +351,7 @@ core.StatusExpired    // "EXPIRED"
 core.StatusRefunded   // "REFUNDED"
 ```
 
-## Testing
+## Tests
 
 ```bash
 # Run all tests
@@ -359,16 +369,16 @@ golangci-lint run ./...
 
 ## Security notes
 
-- Keep secret keys on the server. Anything sent to the browser can be read by the shopper.
-- Call `VerifyPayment` on the server before you fulfil an order. A redirect to your success URL proves nothing, because the shopper controls it.
-- Pass `ExpectedAmount` and `OriginalOrderID` from your own order record. Without them, a real payment for a cheaper order can be replayed against an expensive one.
+- Keep secret keys on the server. The customer can read all data that you send to the browser.
+- Call `VerifyPayment` on the server before you complete an order. A redirect to your success URL is not proof of payment, because the customer controls the redirect.
+- Always set `ExpectedAmount` and `OriginalOrderID` from your order record. If you do not, a customer can use the callback of a small order again for a large order.
 - Use HTTPS callback URLs in production.
-- `creditor.pem` has no password. Keep it out of git and run `chmod 600` on it.
+- The file `creditor.pem` has no password. Do not add it to git. Run `chmod 600` on it.
 
-## Contributing
+## Contributions
 
-Pull requests are welcome. Run `go test ./...` and `golangci-lint run ./...` before you open one.
+You can send a pull request. Before you send it, run `go test ./...` and `golangci-lint run ./...`.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT License. Refer to [LICENSE](LICENSE).
