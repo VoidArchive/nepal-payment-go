@@ -479,3 +479,90 @@ func TestVerifyPaymentLookup400WithStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckStatusAndProviderRef(t *testing.T) {
+	tests := []struct {
+		name        string
+		call        func(p *Provider) (*core.VerifyResponse, error)
+		reply       *lookupResponse
+		wantErr     error
+		wantStatus  string
+		wantSuccess bool
+	}{
+		{
+			name: "check status paid",
+			call: func(p *Provider) (*core.VerifyResponse, error) {
+				return p.CheckStatus(context.Background(), &core.StatusRequest{OrderID: "ORDER-1", ProviderRef: "test_pidx", Amount: 10000})
+			},
+			reply:       &lookupResponse{PIDX: "test_pidx", TotalAmount: 10000, Status: "Completed", TransactionID: "txn_1"},
+			wantStatus:  core.StatusComplete,
+			wantSuccess: true,
+		},
+		{
+			name: "check status pending",
+			call: func(p *Provider) (*core.VerifyResponse, error) {
+				return p.CheckStatus(context.Background(), &core.StatusRequest{ProviderRef: "test_pidx"})
+			},
+			reply:      &lookupResponse{PIDX: "test_pidx", TotalAmount: 10000, Status: "Pending"},
+			wantStatus: core.StatusPending,
+		},
+		{
+			name: "check status amount mismatch",
+			call: func(p *Provider) (*core.VerifyResponse, error) {
+				return p.CheckStatus(context.Background(), &core.StatusRequest{ProviderRef: "test_pidx", Amount: 500})
+			},
+			reply:   &lookupResponse{PIDX: "test_pidx", TotalAmount: 10000, Status: "Completed"},
+			wantErr: core.ErrAmountMismatch,
+		},
+		{
+			name: "check status missing pidx",
+			call: func(p *Provider) (*core.VerifyResponse, error) {
+				return p.CheckStatus(context.Background(), &core.StatusRequest{OrderID: "ORDER-1", Amount: 10000})
+			},
+			wantErr: core.ErrInvalidRequest,
+		},
+		{
+			name: "verify with matching provider ref",
+			call: func(p *Provider) (*core.VerifyResponse, error) {
+				return p.VerifyPayment(context.Background(), &core.VerifyRequest{EncodedParams: map[string]string{"pidx": "test_pidx"}, ProviderRef: "test_pidx"})
+			},
+			reply:       &lookupResponse{PIDX: "test_pidx", TotalAmount: 10000, Status: "Completed"},
+			wantStatus:  core.StatusComplete,
+			wantSuccess: true,
+		},
+		{
+			name: "verify with other provider ref",
+			call: func(p *Provider) (*core.VerifyResponse, error) {
+				return p.VerifyPayment(context.Background(), &core.VerifyRequest{EncodedParams: map[string]string{"pidx": "other_pidx"}, ProviderRef: "test_pidx"})
+			},
+			wantErr: core.ErrInvalidRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.reply == nil {
+					t.Error("unexpected lookup call")
+				}
+				var body lookupRequest
+				assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+				assert.Equal(t, "test_pidx", body.PIDX)
+				_ = json.NewEncoder(w).Encode(tt.reply) //nolint:errcheck
+			}))
+			defer server.Close()
+
+			provider, err := New(Config{SecretKey: "test_secret", WebsiteURL: "https://example.com", BaseURL: server.URL})
+			require.NoError(t, err)
+
+			resp, err := tt.call(provider)
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantStatus, resp.Status)
+			assert.Equal(t, tt.wantSuccess, resp.Success)
+		})
+	}
+}

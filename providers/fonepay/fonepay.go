@@ -42,6 +42,7 @@ type Config struct {
 }
 
 // Provider implements core.Provider for FonePay payments.
+// It does not implement core.StatusChecker: FonePay cannot be checked without the redirect parameters.
 type Provider struct {
 	config     Config
 	httpClient *http.Client

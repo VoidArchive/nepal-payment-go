@@ -459,3 +459,64 @@ func TestStatusNormalization(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckStatus(t *testing.T) {
+	_, pemData := generateTestKey(t)
+
+	tests := []struct {
+		name        string
+		request     *core.StatusRequest
+		serverBody  string
+		wantErr     error
+		wantStatus  string
+		wantSuccess bool
+	}{
+		{
+			name:        "paid",
+			request:     &core.StatusRequest{OrderID: "ORDER-123", Amount: 500},
+			serverBody:  `{"referenceId":"ORDER-123","txnAmt":"500","status":"SUCCESS"}`,
+			wantStatus:  core.StatusComplete,
+			wantSuccess: true,
+		},
+		{
+			name:       "pending",
+			request:    &core.StatusRequest{OrderID: "ORDER-123", Amount: 500},
+			serverBody: `{"referenceId":"ORDER-123","txnAmt":"500","status":"PENDING"}`,
+			wantStatus: core.StatusPending,
+		},
+		{
+			name:       "amount mismatch",
+			request:    &core.StatusRequest{OrderID: "ORDER-123", Amount: 500},
+			serverBody: `{"referenceId":"ORDER-123","txnAmt":"900","status":"SUCCESS"}`,
+			wantErr:    core.ErrAmountMismatch,
+		},
+		{name: "missing order ID", request: &core.StatusRequest{Amount: 500}, wantErr: core.ErrInvalidRequest},
+		{name: "missing amount", request: &core.StatusRequest{OrderID: "ORDER-123"}, wantErr: core.ErrInvalidRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body validationRequest
+				assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+				assert.Equal(t, "ORDER-123", body.ReferenceID)
+				assert.Equal(t, int64(500), body.TxnAmount)
+				_, _ = w.Write([]byte(tt.serverBody))
+			}))
+			defer server.Close()
+
+			provider, err := New(Config{MerchantID: "MERCHANT001", AppID: "APP001", AppPassword: "secret", CertData: pemData, Sandbox: true})
+			require.NoError(t, err)
+			provider.validationURL = server.URL
+
+			resp, err := provider.CheckStatus(context.Background(), tt.request)
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantStatus, resp.Status)
+			assert.Equal(t, tt.wantSuccess, resp.Success)
+		})
+	}
+}

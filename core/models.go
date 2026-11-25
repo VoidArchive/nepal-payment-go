@@ -42,7 +42,7 @@ type PaymentResponse struct {
 	FormFields map[string]string
 
 	// TransactionID from the provider (may be empty at initiation).
-	// For Khalti this is the pidx: match it to the callback pidx before verifying.
+	// For Khalti this is the pidx. Store it and pass it as VerifyRequest.ProviderRef.
 	TransactionID string
 }
 
@@ -52,8 +52,12 @@ type VerifyRequest struct {
 	EncodedParams map[string]string
 
 	// OriginalOrderID: when set, a callback with a different order ID is rejected.
-	// Always set it. Not checked for Khalti: match the callback pidx to TransactionID instead.
+	// Always set it. Not checked for Khalti (its lookup has no order ID): set ProviderRef instead.
 	OriginalOrderID string
+
+	// ProviderRef is the PaymentResponse.TransactionID returned by InitiatePayment for this order.
+	// When set, a callback that carries a different provider reference is rejected.
+	ProviderRef string
 
 	// ExpectedAmount in paisa. 0 skips the check, except connectIPS where it is required.
 	ExpectedAmount int64
@@ -84,4 +88,11 @@ type VerifyResponse struct {
 
 	// VerifiedAt timestamp (Unix seconds).
 	VerifiedAt int64
+}
+
+// StatusRequest identifies a payment for a status check without callback data.
+type StatusRequest struct {
+	OrderID     string // the order ID sent to the gateway in InitiatePayment
+	ProviderRef string // PaymentResponse.TransactionID from InitiatePayment (Khalti: pidx)
+	Amount      int64  // paisa; the amount of the payment
 }
