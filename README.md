@@ -21,6 +21,15 @@ This Go SDK lets your application receive payments in Nepal. It supports eSewa, 
 | [ConnectIPS](https://connectips.com) | Form POST | RSA-SHA256 Certificate |
 | [FonePay](https://fonepay.com) | Redirect | HMAC-SHA512 |
 
+### Test status
+
+- eSewa: tested with a real payment in the eSewa sandbox.
+- Khalti: tested in the Khalti sandbox with version 1. Version 2 is not tested again.
+- FonePay: the request and the callback signature are tested in the FonePay sandbox. A successful payment is not tested, because the sandbox bank pages do not work.
+- ConnectIPS: experimental. The code follows the NCHL documents, but it is not tested with the NCHL system. NCHL gives credentials only to registered merchants.
+
+If you have ConnectIPS test (UAT) credentials, you can help. Refer to the open issue about the ConnectIPS test.
+
 ## Installation
 
 ```bash
@@ -218,6 +227,8 @@ The demo shows one checkout page for all four providers.
 | Secret Key | Get from [Khalti Dashboard](https://admin.khalti.com) |
 
 ### ConnectIPS
+
+ConnectIPS support is experimental. Refer to [Test status](#test-status).
 
 Register as a merchant with [Nepal Clearing House (NCHL)](https://nchl.com.np). NCHL gives you a Merchant ID, an App ID, an app password and a `.pfx` certificate file.
 
