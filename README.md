@@ -28,7 +28,7 @@ This Go SDK lets your application receive payments in Nepal. It supports eSewa, 
 - FonePay: the request and the callback signature are tested in the FonePay sandbox. A successful payment is not tested, because the sandbox bank pages do not work.
 - ConnectIPS: experimental. The code follows the NCHL documents, but it is not tested with the NCHL system. NCHL gives credentials only to registered merchants.
 
-If you have ConnectIPS test (UAT) credentials, you can help. Refer to the open issue about the ConnectIPS test.
+If you have ConnectIPS test (UAT) credentials, you can help. Refer to [issue #3](https://github.com/VoidArchive/nepal-payment-go/issues/3).
 
 ## Installation
 
