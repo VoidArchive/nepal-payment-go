@@ -27,16 +27,30 @@ func clone(p *Payment) *Payment {
 	return &c
 }
 
+// active returns a copy of the order's active payment, or nil. m.mu must be held.
+func (m *memoryStore) active(orderID, provider string) *Payment {
+	for _, q := range m.payments {
+		if q.OrderID == orderID && (q.Status == StatusPaid || q.Status == StatusPending && q.Provider == provider) {
+			return clone(q)
+		}
+	}
+	return nil
+}
+
 func (m *memoryStore) Create(_ context.Context, p *Payment) (*Payment, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, q := range m.payments {
-		if q.OrderID == p.OrderID && (q.Status == StatusPaid || q.Status == StatusPending && q.Provider == p.Provider) {
-			return clone(q), nil
-		}
+	if q := m.active(p.OrderID, p.Provider); q != nil {
+		return q, nil
 	}
 	m.payments[p.ID] = clone(p)
 	return nil, nil
+}
+
+func (m *memoryStore) FindActive(_ context.Context, orderID, provider string) (*Payment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.active(orderID, provider), nil
 }
 
 func (m *memoryStore) Get(_ context.Context, id string) (*Payment, error) {

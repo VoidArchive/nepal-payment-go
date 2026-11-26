@@ -242,7 +242,7 @@ The service obeys these rules:
 
 Limits:
 
-- `NewMemoryStore` loses all payments when the program stops. For production, write a `Store` for your database. The `payments/storetest` package contains tests that each `Store` must pass.
+- `NewMemoryStore` loses all payments when the program stops. For production, write a `Store` for your database. The `payments/storetest` package contains tests that each `Store` must pass. If your `Store` also has the `FindActive` method (`payments.ActiveFinder`), a repeated `Create` does not call the provider again.
 - A customer can start a payment with one provider and then pay with a different provider for the same order. If the customer pays the two payments, the two payments become `paid`. You must refund one of them.
 
 ### Mock provider

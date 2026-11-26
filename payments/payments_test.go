@@ -323,6 +323,25 @@ func TestCreate(t *testing.T) {
 	})
 }
 
+func TestRepeatCreateSkipsGateway(t *testing.T) {
+	calls := 0
+	gw := &core.MockProvider{InitiateFunc: func(context.Context, *core.PaymentRequest) (*core.PaymentResponse, error) {
+		calls++
+		if calls > 1 {
+			return nil, core.ErrProviderError // the gateway is down for the repeat
+		}
+		return &core.PaymentResponse{}, nil
+	}}
+	e := newEnv(t, map[string]core.Provider{"gw": gw})
+	first := e.create(t, "order-1", "gw", 10050)
+
+	again := e.create(t, "order-1", "gw", 10050)
+	assert.Equal(t, first.ID, again.ID)
+	_, err := e.svc.Create(ctx, payments.CreateParams{OrderID: "order-1", Provider: "gw", Amount: 1})
+	assert.ErrorIs(t, err, payments.ErrAmountConflict)
+	assert.Equal(t, 1, calls)
+}
+
 func TestVerifyErrorLeavesPending(t *testing.T) {
 	var got *core.VerifyRequest
 	bad := &core.MockProvider{VerifyFunc: func(_ context.Context, r *core.VerifyRequest) (*core.VerifyResponse, error) {
