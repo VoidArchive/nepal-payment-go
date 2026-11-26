@@ -86,22 +86,23 @@ func Run(t *testing.T, newStore func() payments.Store) {
 		}
 	})
 
+	activeRules := []struct {
+		name         string
+		oldStatus    payments.Status
+		newProvider  string
+		wantExisting bool
+	}{
+		{"pending same provider", payments.StatusPending, "esewa", true},
+		{"pending other provider", payments.StatusPending, "khalti", false},
+		{"paid same provider", payments.StatusPaid, "esewa", true},
+		{"paid other provider", payments.StatusPaid, "khalti", true},
+		{"failed", payments.StatusFailed, "esewa", false},
+		{"expired", payments.StatusExpired, "esewa", false},
+		{"refunded", payments.StatusRefunded, "esewa", false},
+	}
+
 	t.Run("CreateRules", func(t *testing.T) {
-		tests := []struct {
-			name         string
-			oldStatus    payments.Status
-			newProvider  string
-			wantExisting bool
-		}{
-			{"pending same provider", payments.StatusPending, "esewa", true},
-			{"pending other provider", payments.StatusPending, "khalti", false},
-			{"paid same provider", payments.StatusPaid, "esewa", true},
-			{"paid other provider", payments.StatusPaid, "khalti", true},
-			{"failed", payments.StatusFailed, "esewa", false},
-			{"expired", payments.StatusExpired, "esewa", false},
-			{"refunded", payments.StatusRefunded, "esewa", false},
-		}
-		for _, tt := range tests {
+		for _, tt := range activeRules {
 			t.Run(tt.name, func(t *testing.T) {
 				s := newStore()
 				mustCreate(t, s, payment("old", "o1", "esewa", tt.oldStatus, base))
@@ -126,6 +127,27 @@ func Run(t *testing.T, newStore func() payments.Store) {
 					if getErr != nil {
 						t.Errorf("new payment not inserted: %v", getErr)
 					}
+				}
+			})
+		}
+	})
+
+	t.Run("FindActive", func(t *testing.T) {
+		if _, ok := newStore().(payments.ActiveFinder); !ok {
+			t.Skip("store does not implement payments.ActiveFinder")
+		}
+		for _, tt := range activeRules {
+			t.Run(tt.name, func(t *testing.T) {
+				s := newStore()
+				mustCreate(t, s, payment("old", "o1", "esewa", tt.oldStatus, base))
+				mustCreate(t, s, payment("other-order", "o2", tt.newProvider, payments.StatusPending, base))
+
+				got, err := s.(payments.ActiveFinder).FindActive(ctx, "o1", tt.newProvider)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tt.wantExisting && (got == nil || got.ID != "old") || !tt.wantExisting && got != nil {
+					t.Errorf("FindActive = %+v, want old: %v", got, tt.wantExisting)
 				}
 			})
 		}

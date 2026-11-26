@@ -66,6 +66,15 @@ type Store interface {
 	ListDue(ctx context.Context, now time.Time, limit int) ([]*Payment, error)
 }
 
+// ActiveFinder is an optional interface a Store may also implement. FindActive
+// returns the order's active payment by the same rule as Store.Create (a paid
+// payment with the same OrderID, any provider, or a pending payment with the
+// same OrderID AND provider), or (nil, nil) when there is none. With it,
+// Service.Create answers a repeat without calling the gateway.
+type ActiveFinder interface {
+	FindActive(ctx context.Context, orderID, provider string) (*Payment, error)
+}
+
 // Service creates payments and moves them through their statuses.
 type Service struct {
 	Store             Store
@@ -115,9 +124,23 @@ func (s *Service) Create(ctx context.Context, in CreateParams) (*Payment, error)
 		return nil, err
 	}
 
+	if f, ok := s.Store.(ActiveFinder); ok {
+		existing, err := f.FindActive(ctx, in.OrderID, in.Provider)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			if existing.Amount != in.Amount {
+				return nil, ErrAmountConflict
+			}
+			return existing, nil
+		}
+	}
+
 	id := newID()
-	// Initiate before storing so a gateway failure leaves no half-written record;
-	// on a repeat the fresh gateway session is simply dropped.
+	// Initiate before storing so a gateway failure leaves no half-written record.
+	// A repeat that FindActive did not catch (no ActiveFinder, or a concurrent
+	// first request) is caught by Store.Create and the fresh gateway session is dropped.
 	resp, err := prov.InitiatePayment(ctx, &core.PaymentRequest{
 		Amount:        in.Amount,
 		OrderID:       id,
