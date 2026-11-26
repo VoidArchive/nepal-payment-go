@@ -409,13 +409,15 @@ func TestHTTPErrors(t *testing.T) {
 		statusCode int
 		body       string
 		wantErr    error
+		wantText   string
 	}{
-		{"rate limited", http.StatusTooManyRequests, "", core.ErrRateLimited},
-		{"unauthorized", http.StatusUnauthorized, "", core.ErrInvalidConfig},
-		{"unauthorized with detail", http.StatusUnauthorized, `{"detail":"Invalid token.","status_code":401}`, core.ErrInvalidConfig},
-		{"not found", http.StatusNotFound, "", core.ErrPaymentNotFound},
-		{"bad request", http.StatusBadRequest, "", core.ErrInvalidRequest},
-		{"server error", http.StatusInternalServerError, "", core.ErrProviderError},
+		{"rate limited", http.StatusTooManyRequests, "", core.ErrRateLimited, ""},
+		{"unauthorized", http.StatusUnauthorized, "", core.ErrInvalidConfig, ""},
+		{"unauthorized with detail", http.StatusUnauthorized, `{"detail":"Invalid token.","status_code":401}`, core.ErrInvalidConfig, "Invalid token."},
+		{"not found", http.StatusNotFound, "", core.ErrPaymentNotFound, ""},
+		{"bad request", http.StatusBadRequest, "", core.ErrInvalidRequest, ""},
+		{"validation error", http.StatusBadRequest, `{"purchase_order_name":["This field may not be blank."],"error_key":"validation_error"}`, core.ErrInvalidRequest, "purchase_order_name"},
+		{"server error", http.StatusInternalServerError, "", core.ErrProviderError, ""},
 	}
 
 	for _, tt := range tests {
@@ -440,9 +442,7 @@ func TestHTTPErrors(t *testing.T) {
 
 			require.Error(t, err)
 			assert.ErrorIs(t, err, tt.wantErr)
-			if tt.body != "" {
-				assert.Contains(t, err.Error(), "Invalid token.")
-			}
+			assert.Contains(t, err.Error(), tt.wantText)
 		})
 	}
 }

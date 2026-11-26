@@ -228,6 +228,10 @@ func (p *Provider) handleErrorResponse(statusCode int, body []byte) error {
 	if json.Unmarshal(body, &errResp) == nil && errResp.Detail != "" {
 		return fmt.Errorf("%w: %s", err, errResp.Detail)
 	}
+	// Validation errors have no "detail": {"purchase_order_name":["This field may not be blank."],"error_key":"validation_error"}.
+	if statusCode == http.StatusBadRequest && len(body) > 0 {
+		return fmt.Errorf("%w: %s", err, body[:min(len(body), 500)])
+	}
 	return err
 }
 
